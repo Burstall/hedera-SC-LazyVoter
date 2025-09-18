@@ -61,10 +61,12 @@ constructor(
 ### Voting
 - `vote(uint256[] calldata serials, VoteType voteType)`
 	- Only eligible serials, only once per serial, only by owner or delegated address.
+	- **Exclusive delegation**: Once delegated, only the delegate can vote on that serial (owner cannot).
+	- **Vote state tracking**: Uses `hasVoted` flag to prevent arithmetic underflow and ensure one-vote-per-serial.
 
 ### Views & Analytics
 - `totalEligibleVoters()`
-- `getAllVoters()`
+- `getAllVoters()` → `(address[] voters, uint256[] voteCounts)`
 - `timeRemaining()`
 - `getEligibleSerials(uint256 offset, uint256 limit)`
 - `getVotesByAddress(address)`
@@ -103,6 +105,63 @@ constructor(
 - No reentrancy risk in HBAR withdrawal (uses OpenZeppelin Address).
 - All state changes emit events for transparency.
 - Voting logic strictly enforces eligibility, delegation, and time window.
+
+## Testing
+Comprehensive test suite in `test/LazyVoter.test.js` covers:
+
+### Setup
+- Deploy `LazyDelegateRegistry` contract (or use existing via env var).
+- Create test accounts (operator, alice, bob) using Hedera `accountCreator`.
+- Mint NFT collection using Hedera `mintNFT` helper.
+- Associate NFT to accounts and transfer serials for voting scenarios.
+
+### Test Cases
+1. **Deployment & Constructor**
+   - Valid deployment with all parameters.
+   - Reverts on invalid inputs (zero addresses, invalid times).
+   - Eligible serials added correctly.
+
+2. **Owner Controls (Pre-Voting)**
+   - Add/remove/update eligible serials before `startTime`.
+   - Update vote message and quorum before `startTime`.
+   - Reverts after voting starts.
+
+3. **Owner Emergency Controls**
+   - Pause/unpause voting (anytime).
+   - Withdraw HBAR (anytime, with balance checks).
+
+4. **Voting Logic**
+   - Valid votes: owner votes on eligible serials.
+   - Delegated votes: delegate votes on behalf of owner (exclusive - owner cannot vote once delegated).
+   - Vote changes: update existing votes, counts adjust correctly (prevents underflow with `hasVoted` flag).
+   - Invalid votes: ineligible serials, non-owner/non-delegate, outside window, paused, max serials exceeded, already voted serials.
+
+5. **Analytics & Views**
+   - `getAllVoters` (returns voters + vote counts), `getEligibleSerials` (paginated).
+   - `getVotesByAddress`, `getAllVotes` (paginated).
+   - `totalEligibleVoters`, `votingStatus`, `timeRemaining`.
+   - `quorumPercent`, `hasQuorum`, `getResults`.
+   - `lastVoterForSerial`, `getVoteInfo`.
+
+6. **Edge Cases**
+   - Empty serial arrays, duplicate serials (gas waste but no state change).
+   - Time windows: before start, during, after end.
+   - Max 40 serials per vote.
+   - Zero quorum, no eligible voters.
+
+7. **Security & Access Control**
+   - Only owner can call owner functions.
+   - Non-owners cannot vote on non-owned/non-delegated serials.
+   - Proper reverts with custom errors.
+   - Event emission for all state changes.
+
+### Running Tests
+```bash
+npm test
+# or
+npx hardhat test
+```
+Requires `.env` with `PRIVATE_KEY` and `ACCOUNT_ID` for Hedera network.
 
 ## Extensibility
 - Modular design: easy to add new analytics, controls, or voting logic.

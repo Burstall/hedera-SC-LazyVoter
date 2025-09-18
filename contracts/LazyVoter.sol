@@ -3,119 +3,11 @@ pragma solidity >=0.8.12 <0.9.0;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
-
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ILazyDelegateRegistry} from "./interfaces/ILazyDelegateRegistry.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 contract LazyVoter is Ownable {
-    event EligibleSerialsRemoved(uint256[] serials);
-    // --- OWNER: Batch remove eligible serials before voting starts ---
-    function removeEligibleSerials(
-        uint256[] calldata serials
-    ) external onlyOwner {
-        if (block.timestamp >= startTime) revert VoteStarted();
-        for (uint256 i = 0; i < serials.length; i++) {
-            eligibleSerialsSet.remove(serials[i]);
-        }
-        emit EligibleSerialsRemoved(serials);
-    }
-
-    // --- OWNER: Batch update eligible serials (add and remove in one tx) ---
-    function updateEligibleSerials(
-        uint256[] calldata addSerials,
-        uint256[] calldata removeSerials
-    ) external onlyOwner {
-        if (block.timestamp >= startTime) revert VoteStarted();
-        _addEligibleSerials(addSerials);
-        for (uint256 i = 0; i < removeSerials.length; i++) {
-            eligibleSerialsSet.remove(removeSerials[i]);
-        }
-        emit EligibleSerialsAdded(addSerials);
-        emit EligibleSerialsRemoved(removeSerials);
-    }
-    // --- VIEW: Get all voters (addresses) who have voted ---
-    function getAllVoters() external view returns (address[] memory voters) {
-        uint256 len = votedSerialsSet.length();
-        voters = new address[](len);
-        for (uint256 i = 0; i < len; i++) {
-            uint256 serial = votedSerialsSet.at(i);
-            voters[i] = serialVotes[serial].voter;
-        }
-    }
-
-    // --- VIEW: Get time remaining for voting ---
-    function timeRemaining() external view returns (uint256) {
-        if (block.timestamp >= endTime) return 0;
-        if (block.timestamp < startTime) return endTime - startTime;
-        return endTime - block.timestamp;
-    }
-
-    // --- VIEW: Get paginated eligible serials ---
-    function getEligibleSerials(
-        uint256 offset,
-        uint256 limit
-    ) external view returns (uint256[] memory serials) {
-        uint256 total = eligibleSerialsSet.length();
-        if (offset >= total) return new uint256[](0);
-        uint256 end = offset + limit;
-        if (end > total) end = total;
-        uint256 len = end - offset;
-        serials = new uint256[](len);
-        for (uint256 i = 0; i < len; i++) {
-            serials[i] = eligibleSerialsSet.at(offset + i);
-        }
-    }
-    using Address for address payable;
-    using EnumerableSet for EnumerableSet.UintSet;
-
-    // --- SNAPSHOT VARIABLES ---
-    EnumerableSet.UintSet private eligibleSerialsSet;
-    error SerialNotEligible(uint256 serial);
-    // --- PAUSABLE ---
-    bool public votingPaused;
-    event VotingPaused(bool paused);
-    event EligibleSerialsAdded(uint256[] serials);
-
-    // --- OWNER EMERGENCY CONTROLS ---
-    function pauseVoting() external onlyOwner {
-        votingPaused = true;
-        emit VotingPaused(true);
-    }
-    function unpauseVoting() external onlyOwner {
-        votingPaused = false;
-        emit VotingPaused(false);
-    }
-
-    // --- STATE VARIABLES ---
-    string public voteMessage;
-    address public immutable NFT_TOKEN;
-    uint256 public quorum;
-    uint256 public startTime;
-    uint256 public endTime;
-    ILazyDelegateRegistry public lazyDelegateRegistry;
-
-    // --- VOTING DATA STRUCTURES ---
-    enum VoteType {
-        No,
-        Yes,
-        Abstain,
-        None
-    }
-    struct VoteInfo {
-        VoteType voteType;
-        address voter;
-        uint256 timestamp;
-    }
-    // serial => VoteInfo
-    mapping(uint256 => VoteInfo) internal serialVotes;
-    // serials that have voted
-    EnumerableSet.UintSet private votedSerialsSet;
-    // vote counts
-    uint256 public yesCount;
-    uint256 public noCount;
-    uint256 public abstainCount;
-
     // --- ERRORS ---
     error ZeroAddress();
     error InvalidTime();
@@ -127,12 +19,50 @@ contract LazyVoter is Ownable {
     error NotOwnerOrDelegated(uint256 serial);
     error VoteWindowClosed();
     error MaxSerialsExceeded();
+    error SerialNotEligible(uint256 serial);
 
     // --- EVENTS ---
+    event EligibleSerialsAdded(uint256[] serials);
+    event EligibleSerialsRemoved(uint256[] serials);
+    event VotingPaused(bool paused);
     event VoteMessageUpdated(string newMessage);
     event QuorumUpdated(uint256 newQuorum);
     event VoteCasted(address indexed voter, uint256[] serials, uint8 voteType);
     event HbarWithdrawn(address indexed receiver, uint256 amount);
+
+    // --- STATE VARIABLES ---
+    using Address for address payable;
+    using EnumerableSet for EnumerableSet.UintSet;
+
+    string public voteMessage;
+    address public immutable NFT_TOKEN;
+    uint256 public quorum;
+    uint256 public startTime;
+    uint256 public endTime;
+    ILazyDelegateRegistry public lazyDelegateRegistry;
+    bool public votingPaused;
+
+    // Voting data structures
+    enum VoteType {
+        No,
+        Yes,
+        Abstain,
+        None
+    }
+    struct VoteInfo {
+        VoteType voteType;
+        address voter;
+        uint256 timestamp;
+        bool hasVoted;
+    }
+
+    // Storage
+    mapping(uint256 => VoteInfo) internal serialVotes;
+    EnumerableSet.UintSet private eligibleSerialsSet;
+    EnumerableSet.UintSet private votedSerialsSet;
+    uint256 public yesCount;
+    uint256 public noCount;
+    uint256 public abstainCount;
 
     // --- CONSTRUCTOR ---
     constructor(
@@ -158,20 +88,36 @@ contract LazyVoter is Ownable {
         }
     }
 
-    // --- OWNER: Batch add/update eligible serials before voting starts ---
+    // --- OWNER-ONLY FUNCTIONS ---
     function addEligibleSerials(uint256[] calldata serials) external onlyOwner {
         if (block.timestamp >= startTime) revert VoteStarted();
         _addEligibleSerials(serials);
         emit EligibleSerialsAdded(serials);
     }
 
-    function _addEligibleSerials(uint256[] memory serials) internal {
+    function removeEligibleSerials(
+        uint256[] calldata serials
+    ) external onlyOwner {
+        if (block.timestamp >= startTime) revert VoteStarted();
         for (uint256 i = 0; i < serials.length; i++) {
-            eligibleSerialsSet.add(serials[i]);
+            eligibleSerialsSet.remove(serials[i]);
         }
+        emit EligibleSerialsRemoved(serials);
     }
 
-    // --- OWNER FUNCTIONS ---
+    function updateEligibleSerials(
+        uint256[] calldata addSerials,
+        uint256[] calldata removeSerials
+    ) external onlyOwner {
+        if (block.timestamp >= startTime) revert VoteStarted();
+        _addEligibleSerials(addSerials);
+        for (uint256 i = 0; i < removeSerials.length; i++) {
+            eligibleSerialsSet.remove(removeSerials[i]);
+        }
+        emit EligibleSerialsAdded(addSerials);
+        emit EligibleSerialsRemoved(removeSerials);
+    }
+
     function updateVoteMessage(string memory _newMessage) external onlyOwner {
         if (block.timestamp >= startTime) revert VoteStarted();
         voteMessage = _newMessage;
@@ -180,9 +126,18 @@ contract LazyVoter is Ownable {
 
     function updateQuorum(uint256 _newQuorum) external onlyOwner {
         if (block.timestamp >= startTime) revert VoteStarted();
-
         quorum = _newQuorum;
         emit QuorumUpdated(_newQuorum);
+    }
+
+    function pauseVoting() external onlyOwner {
+        votingPaused = true;
+        emit VotingPaused(true);
+    }
+
+    function unpauseVoting() external onlyOwner {
+        votingPaused = false;
+        emit VotingPaused(false);
     }
 
     function withdrawHbar(
@@ -196,9 +151,6 @@ contract LazyVoter is Ownable {
         emit HbarWithdrawn(receiver, amount);
     }
 
-    // --- RECEIVE FUNCTION ---
-    receive() external payable {}
-
     // --- VOTING LOGIC ---
     function vote(uint256[] calldata serials, VoteType voteType) external {
         if (votingPaused) revert VotingIsPaused();
@@ -211,24 +163,32 @@ contract LazyVoter is Ownable {
             if (!eligibleSerialsSet.contains(serial))
                 revert SerialNotEligible(serial);
             address owner = IERC721(NFT_TOKEN).ownerOf(serial);
-            bool delegated = lazyDelegateRegistry.checkDelegateToken(
-                msg.sender,
+            address delegate = lazyDelegateRegistry.getNFTDelegatedTo(
                 NFT_TOKEN,
                 serial
             );
-            if (owner != msg.sender && !delegated)
-                revert NotOwnerOrDelegated(serial);
+
+            if (delegate != address(0)) {
+                // If delegated, only the delegate can vote
+                if (msg.sender != delegate) revert NotOwnerOrDelegated(serial);
+            } else {
+                // If not delegated, only the owner can vote
+                if (msg.sender != owner) revert NotOwnerOrDelegated(serial);
+            }
 
             VoteInfo storage v = serialVotes[serial];
             // If already voted, update counts
-            if (v.voteType == VoteType.Yes) yesCount--;
-            else if (v.voteType == VoteType.No) noCount--;
-            else if (v.voteType == VoteType.Abstain) abstainCount--;
+            if (v.hasVoted) {
+                if (v.voteType == VoteType.Yes) yesCount--;
+                else if (v.voteType == VoteType.No) noCount--;
+                else if (v.voteType == VoteType.Abstain) abstainCount--;
+            }
 
             // Set new vote
             v.voteType = voteType;
             v.voter = msg.sender;
             v.timestamp = block.timestamp;
+            v.hasVoted = true;
 
             // Add to votedSerialsSet if first vote
             if (!votedSerialsSet.contains(serial)) {
@@ -243,12 +203,83 @@ contract LazyVoter is Ownable {
         emit VoteCasted(msg.sender, serials, uint8(voteType));
     }
 
-    // --- VIEW: Total eligible voters (NFT supply) ---
+    // --- INTERNAL HELPERS ---
+    function _addEligibleSerials(uint256[] memory serials) internal {
+        for (uint256 i = 0; i < serials.length; i++) {
+            eligibleSerialsSet.add(serials[i]);
+        }
+    }
+
+    // --- VIEW FUNCTIONS ---
+    function getAllVoters()
+        external
+        view
+        returns (address[] memory voters, uint256[] memory voteCounts)
+    {
+        // Count unique voters and their vote counts
+        uint256 totalVoted = votedSerialsSet.length();
+        address[] memory tempVoters = new address[](totalVoted);
+        uint256[] memory tempCounts = new uint256[](totalVoted);
+
+        // First pass: collect all voters (may have duplicates)
+        for (uint256 i = 0; i < totalVoted; i++) {
+            uint256 serial = votedSerialsSet.at(i);
+            tempVoters[i] = serialVotes[serial].voter;
+        }
+
+        // Second pass: count unique voters
+        uint256 uniqueCount = 0;
+        for (uint256 i = 0; i < totalVoted; i++) {
+            address voter = tempVoters[i];
+            bool found = false;
+            for (uint256 j = 0; j < uniqueCount; j++) {
+                if (tempVoters[j] == voter) {
+                    tempCounts[j]++;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                tempVoters[uniqueCount] = voter;
+                tempCounts[uniqueCount] = 1;
+                uniqueCount++;
+            }
+        }
+
+        // Create final arrays with correct size
+        voters = new address[](uniqueCount);
+        voteCounts = new uint256[](uniqueCount);
+        for (uint256 i = 0; i < uniqueCount; i++) {
+            voters[i] = tempVoters[i];
+            voteCounts[i] = tempCounts[i];
+        }
+    }
+
+    function getEligibleSerials(
+        uint256 offset,
+        uint256 limit
+    ) external view returns (uint256[] memory serials) {
+        uint256 total = eligibleSerialsSet.length();
+        if (offset >= total) return new uint256[](0);
+        uint256 end = offset + limit;
+        if (end > total) end = total;
+        uint256 len = end - offset;
+        serials = new uint256[](len);
+        for (uint256 i = 0; i < len; i++) {
+            serials[i] = eligibleSerialsSet.at(offset + i);
+        }
+    }
+
+    function timeRemaining() external view returns (uint256) {
+        if (block.timestamp >= endTime) return 0;
+        if (block.timestamp < startTime) return endTime - startTime;
+        return endTime - block.timestamp;
+    }
+
     function totalEligibleVoters() public view returns (uint256) {
         return eligibleSerialsSet.length();
     }
 
-    // --- VIEW: All votes for a given address ---
     function getVotesByAddress(
         address voter
     )
@@ -274,7 +305,6 @@ contract LazyVoter is Ownable {
         }
     }
 
-    // --- VIEW: Voting timeline status ---
     function votingStatus() public view returns (string memory) {
         if (votingPaused) return "Paused";
         if (block.timestamp < startTime) return "NotStarted";
@@ -282,25 +312,22 @@ contract LazyVoter is Ownable {
         return "Active";
     }
 
-    // --- VIEW: Quorum percentage ---
     function quorumPercent() public view returns (uint256) {
-        // Returns quorum as basis points (bps, 1/100 of a percent)
-        // quorum is the number of votes required
-        // eligible is the total number of eligible voters
         uint256 eligible = totalEligibleVoters();
         if (eligible == 0) return 0;
         return (quorum * 10000) / eligible;
     }
 
-    // --- VIEW: Last voter for a serial ---
     function lastVoterForSerial(
         uint256 serial
     ) public view returns (address, uint256) {
         VoteInfo memory v = serialVotes[serial];
+        if (!v.hasVoted) {
+            return (address(0), 0);
+        }
         return (v.voter, v.timestamp);
     }
 
-    // --- VIEW: All voters and their votes (paginated) ---
     function getAllVotes(
         uint256 offset,
         uint256 limit
@@ -330,7 +357,6 @@ contract LazyVoter is Ownable {
         }
     }
 
-    // --- VIEW FUNCTIONS ---
     function hasQuorum() public view returns (bool) {
         return yesCount >= quorum;
     }
@@ -358,4 +384,7 @@ contract LazyVoter is Ownable {
     {
         return (yesCount, noCount, abstainCount);
     }
+
+    // --- RECEIVE FUNCTION ---
+    receive() external payable {}
 }

@@ -5,13 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "npx hardhat test",
-    "test-ft": "npx hardhat test test/FungibleTokenCreator.test.js",
-    "test-nft": "npx hardhat test test/MinterContract.test.js",
-    "test-sbt": "npx hardhat test test/SoulboundMinter.test.js",
-    "test-sba": "npx hardhat test test/SoulboundAirdrop.test.js",
-    "deploy-ft": "npx hardhat run scripts/deployment/deploy-FTC.js",
-    "deploy-nft": "npx hardhat run scripts/deployment/deploy-MC.js",
-    "deploy-sbt": "npx hardhat run scripts/deployment/deploy-SBT.js",
+    "test-voter": "npx hardhat test test/LazyVoter.test.js",
+    "deploy-voter": "npx hardhat run scripts/deployment/deploy-Voter.js",
     "logs": "node scripts/getContractLogs.js",
     "solhint": "solhint -f table contracts/**/*.sol"
   },
