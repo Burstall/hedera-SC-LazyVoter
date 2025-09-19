@@ -55,16 +55,33 @@ const main = async () => {
 	if (args.length != 2 || getArgFlag('h')) {
 		console.log('Usage: getVotesByAddress.js <contract-id> <voter-address>');
 		console.log('  <contract-id>: LazyVoter contract ID (e.g., 0.0.12345)');
-		console.log('  <voter-address>: Voter address to check (e.g., 0x1234...)');
+		console.log('  <voter-address>: Voter address to check (Hedera: 0.0.X or Ethereum: 0x...)');
 		console.log('');
 		console.log('Examples:');
-		console.log('  node scripts/interactions/getVotesByAddress.js 0.0.12345 0x742d35Cc6634C0532925a3b844Bc454e4438f44e');
 		console.log('  node scripts/interactions/getVotesByAddress.js 0.0.12345 0.0.123456');
+		console.log('  node scripts/interactions/getVotesByAddress.js 0.0.12345 0x742d35Cc6634C0532925a3b844Bc454e4438f44e');
 		return;
 	}
 
 	const contractId = ContractId.fromString(args[0]);
-	const voterAddress = args[1];
+	let voterAddress = args[1];
+
+	// Convert Hedera account ID format (0.0.X) to Ethereum address format
+	if (voterAddress.startsWith('0.0.')) {
+		try {
+			const accountId = AccountId.fromString(voterAddress);
+			voterAddress = accountId.toSolidityAddress();
+		}
+		catch {
+			console.log('❌ Error: Invalid account ID format:', voterAddress);
+			process.exit(1);
+		}
+	}
+	// Validate Ethereum address format
+	else if (!voterAddress.startsWith('0x') || voterAddress.length !== 42) {
+		console.log('❌ Error: Invalid address format. Use Hedera format (0.0.X) or Ethereum format (0x...)');
+		process.exit(1);
+	}
 
 	console.log('\n=== VOTES BY ADDRESS ===');
 	console.log('\n- Environment:', env);
@@ -95,7 +112,6 @@ const main = async () => {
 
 		const voteSerials = votesResult[0];
 		const voteTypes = votesResult[1];
-		const timestamps = votesResult[2];
 
 		console.log('\n🗳️  Votes cast by', voterAddress + ':');
 		console.log('   Total votes:', voteSerials.length);
@@ -103,13 +119,13 @@ const main = async () => {
 		if (voteSerials.length === 0) {
 			console.log('\n📝 This address has not cast any votes.');
 			console.log('\n✅ Query completed successfully!');
-			return;
+			process.exit(0);
 		}
 
 		console.log('\n📊 Vote Details:');
-		console.log('   ┌────────────┬────────────┬─────────────────────────────┬─────────────┐');
-		console.log('   │ Serial     │ Vote Type  │ Timestamp                   │ Time        │');
-		console.log('   ├────────────┼────────────┼─────────────────────────────┼─────────────┤');
+		console.log('   ┌────────────┬────────────┐');
+		console.log('   │ Serial     │ Vote Type  │');
+		console.log('   ├────────────┼────────────┤');
 
 		let yesVotes = 0;
 		let noVotes = 0;
@@ -118,7 +134,6 @@ const main = async () => {
 		for (let i = 0; i < voteSerials.length; i++) {
 			const serial = Number(voteSerials[i]);
 			const voteTypeNum = Number(voteTypes[i]);
-			const timestamp = Number(timestamps[i]);
 
 			// Convert vote type number to string
 			let voteTypeStr;
@@ -139,20 +154,19 @@ const main = async () => {
 				voteTypeStr = 'Unknown';
 			}
 
-			// Format timestamp
-			const voteDate = new Date(timestamp * 1000);
-			const timeAgo = Math.floor((Date.now() / 1000 - timestamp) / 60);
-
-			console.log(`   │ ${serial.toString().padStart(10)} │ ${voteTypeStr.padStart(10)} │ ${voteDate.toLocaleString().padEnd(27)} │ ${timeAgo.toString().padStart(10)}m │`);
+			console.log(`   │ ${serial.toString().padStart(10)} │ ${voteTypeStr.padStart(10)} │`);
 		}
 
-		console.log('   └────────────┴────────────┴─────────────────────────────┴─────────────┘');
+		console.log('   └────────────┴────────────┘');
 
 		console.log('\n📈 Vote Summary:');
 		console.log('   ✅ Yes votes:', yesVotes);
 		console.log('   ❌ No votes:', noVotes);
 		console.log('   🤐 Abstain votes:', abstainVotes);
 		console.log('   📊 Total votes:', voteSerials.length);
+
+		console.log('\n✅ Query completed successfully!');
+		process.exit(0);
 
 		// Show unique serials voted on
 		const uniqueSerials = [...new Set(voteSerials.map(s => Number(s)))];
@@ -167,4 +181,8 @@ const main = async () => {
 	}
 };
 
-main();
+// Handle main function execution and unhandled promise rejections
+main().catch((error) => {
+	console.error('❌ Unhandled error:', error.message);
+	process.exit(1);
+});
