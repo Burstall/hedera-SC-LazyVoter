@@ -356,6 +356,29 @@ async function deployWithHTS(eligibleSerials) {
 			argv.nftToken = promptRequired('Enter NFT token address (e.g., 0.0.x or 0x...)');
 		}
 
+		// need to make sure we deal with 0.0.XXX and 0x...
+		if (argv.nftToken.startsWith('0x')) {
+			// assume solidity address
+			// convert to TokenId to validate
+			try {
+				argv.nftToken = TokenId.fromEvmAddress(0, 0, argv.nftToken);
+			}
+			catch {
+				console.log('Invalid NFT token address format. Must be 0.0.x or 0x... Aborted.');
+				process.exit(1);
+			}
+		}
+		else {
+			// assume 0.0.x format
+			try {
+				argv.nftToken = TokenId.fromString(argv.nftToken);
+			}
+			catch {
+				console.log('Invalid NFT token address format. Must be 0.0.x or 0x... Aborted.');
+				process.exit(1);
+			}
+		}
+
 		// Fetch NFT information
 		let nftInfo = null;
 		try {

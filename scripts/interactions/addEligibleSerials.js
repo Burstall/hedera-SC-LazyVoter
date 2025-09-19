@@ -36,7 +36,7 @@ require('dotenv').config();
 const fs = require('fs');
 const { ethers } = require('ethers');
 const readlineSync = require('readline-sync');
-const { getArgFlag, getArgParam } = require('../../utils/nodeHelpers');
+const { getArgFlag, getArg, sleep } = require('../../utils/nodeHelpers');
 const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
 const { getSerialsOwned, getTokenDetails } = require('../../utils/hederaMirrorHelpers');
 
@@ -76,7 +76,7 @@ const main = async () => {
 		console.log('  node scripts/interactions/addEligibleSerials.js --fetch-token');
 		console.log('  node scripts/interactions/addEligibleSerials.js --fetch-token --range 1-100');
 		console.log('  node scripts/interactions/addEligibleSerials.js --contract-id 0.0.12345 1,2,3,4,5');
-		return;
+		process.exit(0);
 	}
 
 	// Parse --contract-id flag
@@ -222,7 +222,7 @@ const main = async () => {
 			let endSerial = parseInt(tokenDetails.total_supply);
 
 			if (getArgFlag('--range')) {
-				const rangeStr = getArgParam('--range');
+				const rangeStr = getArg('--range');
 				const rangeMatch = rangeStr.match(/^(\d+)-(\d+)$/);
 				if (!rangeMatch) {
 					console.log('❌ Error: Invalid range format. Use: --range 1-100');
@@ -278,7 +278,7 @@ const main = async () => {
 
 	// Check batch size parameter
 	if (getArgFlag('--batch-size')) {
-		const batchSizeStr = getArgParam('--batch-size');
+		const batchSizeStr = getArg('--batch-size');
 		const parsedBatchSize = parseInt(batchSizeStr);
 		if (isNaN(parsedBatchSize) || parsedBatchSize < 1) {
 			console.log('❌ Error: Invalid batch size. Must be a positive number.');
@@ -385,14 +385,22 @@ const main = async () => {
 
 			console.log(`\n⚙️  Executing batch ${batchNumber}/${batches.length} (${batch.length} serials)...`);
 
-			const result = await contractExecuteFunction(
-				contractId,
-				lazyVoterIface,
-				client,
-				0,
-				'addEligibleSerials',
-				[batch],
-			);
+			let result;
+			try {
+				result = await contractExecuteFunction(
+					contractId,
+					lazyVoterIface,
+					client,
+					80_000 + batch.length * 50_000,
+					'addEligibleSerials',
+					[batch],
+				);
+			}
+			catch (error) {
+				console.error(`❌ Error executing batch ${batchNumber}:`, error.message, result);
+				console.log('❌ Operation aborted.');
+				process.exit(1);
+			}
 
 			console.log(`✅ Batch ${batchNumber} completed successfully!`);
 			console.log(`   Transaction ID: ${result[2].transactionId.toString()}`);
@@ -404,8 +412,8 @@ const main = async () => {
 
 			// Small delay between batches to avoid rate limiting
 			if (i < batches.length - 1) {
-				console.log('   Waiting 2 seconds before next batch...');
-				await new Promise(resolve => setTimeout(resolve, 2000));
+				console.log('   Waiting 1 second before next batch...');
+				await sleep(1000);
 			}
 		}
 
@@ -426,6 +434,9 @@ const main = async () => {
 		const decodedVerify = lazyVoterIface.decodeFunctionResult('totalEligibleVoters', verifyResult);
 		const totalEligible = Number(decodedVerify[0]);
 		console.log(`   Total eligible voters now: ${totalEligible}`);
+
+		console.log('\n✅ Script completed successfully!');
+		process.exit(0);
 
 	}
 	catch (error) {
@@ -457,4 +468,8 @@ const main = async () => {
 	}
 };
 
-main();
+// Handle main function execution and unhandled promise rejections
+main().catch((error) => {
+	console.error('❌ Unhandled error:', error.message);
+	process.exit(1);
+});
