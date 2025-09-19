@@ -39,7 +39,7 @@ require('dotenv').config();
 const fs = require('fs');
 const { ethers } = require('ethers');
 const readlineSync = require('readline-sync');
-const { getArgFlag } = require('../../utils/nodeHelpers');
+const { getArgFlag, sleep } = require('../../utils/nodeHelpers');
 const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
 const { getSerialsOwned } = require('../../utils/hederaMirrorHelpers');
 
@@ -56,14 +56,14 @@ const env = process.env.ENVIRONMENT ?? 'TEST';
 
 let client;
 
-// Vote type mapping
+// Vote type mapping (matches contract enum: No=0, Yes=1, Abstain=2)
 const VOTE_TYPES = {
-	'yes': 0,
-	'no': 1,
+	'no': 0,
+	'yes': 1,
 	'abstain': 2,
 };
 
-const VOTE_NAMES = ['Yes', 'No', 'Abstain'];
+const VOTE_NAMES = ['No', 'Yes', 'Abstain'];
 
 async function showVotingOptions(lazyVoterIface, delegateRegistryIface, nftTokenId, contractId) {
 	console.log('\n=== VOTING OPTIONS ===');
@@ -324,7 +324,7 @@ const main = async () => {
 	// Handle --show-options flag
 	if (getArgFlag('--show-options')) {
 		await showVotingOptions(lazyVoterIface, delegateRegistryIface, nftTokenId, contractId);
-		return;
+		process.exit(0);
 	}
 
 	// Regular voting flow
@@ -460,7 +460,7 @@ const main = async () => {
 			contractId,
 			lazyVoterIface,
 			client,
-			0,
+			200_000 + 100_000 * serials.length,
 			'vote',
 			[serials, voteType],
 		);
@@ -469,6 +469,8 @@ const main = async () => {
 		console.log('   Transaction ID:', result[2].transactionId.toString());
 		console.log('   Serials voted:', serials.length);
 		console.log('   Vote type:', voteName);
+
+		await sleep(5000);
 
 		// Show updated vote counts
 		console.log('\n📊 Updated vote results:');
@@ -503,6 +505,9 @@ const main = async () => {
 		);
 		console.log('   🤐 Abstain votes:', Number(lazyVoterIface.decodeFunctionResult('abstainCount', abstainResult)[0]));
 
+		console.log('\n✅ Vote completed successfully!');
+		process.exit(0);
+
 	}
 	catch (error) {
 		console.error('\n❌ Error casting vote:', error.message);
@@ -516,4 +521,8 @@ const main = async () => {
 	}
 };
 
-main();
+// Handle main function execution and unhandled promise rejections
+main().catch((error) => {
+	console.error('❌ Unhandled error:', error.message);
+	process.exit(1);
+});

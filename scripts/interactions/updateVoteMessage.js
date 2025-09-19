@@ -183,6 +183,9 @@ const main = async () => {
 		console.log('   Transaction ID:', result[2].transactionId.toString());
 		console.log('   New message:', newMessage);
 
+		console.log('\n✅ Vote message update completed successfully!');
+		process.exit(0);
+
 		// Verify the message was updated
 		console.log('\n🔍 Verifying message was updated...');
 		const verifyResult = await readOnlyEVMFromMirrorNode(
@@ -226,4 +229,8 @@ const main = async () => {
 	}
 };
 
-main();
+// Handle main function execution and unhandled promise rejections
+main().catch((error) => {
+	console.error('❌ Unhandled error:', error.message);
+	process.exit(1);
+});

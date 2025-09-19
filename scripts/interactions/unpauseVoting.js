@@ -26,7 +26,7 @@ require('dotenv').config();
 const fs = require('fs');
 const { ethers } = require('ethers');
 const readlineSync = require('readline-sync');
-const { getArgFlag, sleep } = require('../../utils/nodeHelpers');
+const { getArgFlag } = require('../../utils/nodeHelpers');
 const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
 
 // Get operator from .env file
@@ -197,9 +197,6 @@ const main = async () => {
 		console.log('✅ Successfully unpaused voting!');
 		console.log('   Transaction ID:', result[2].transactionId.toString());
 
-		// wait 5 seconds for state to update
-		await sleep(5000);
-
 		// Verify the unpause was successful
 		console.log('\n🔍 Verifying pause status...');
 		const verifyResult = await readOnlyEVMFromMirrorNode(
@@ -217,6 +214,9 @@ const main = async () => {
 		else {
 			console.log('   ❌ Unpause verification failed');
 		}
+
+		console.log('\n✅ Unpause operation completed successfully!');
+		process.exit(0);
 
 	}
 	catch (error) {
@@ -238,4 +238,8 @@ const main = async () => {
 	}
 };
 
-main();
+// Handle main function execution and unhandled promise rejections
+main().catch((error) => {
+	console.error('❌ Unhandled error:', error.message);
+	process.exit(1);
+});
