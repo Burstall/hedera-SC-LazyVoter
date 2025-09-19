@@ -1,17 +1,12 @@
 #!/usr/bin/env node
 
 /**
- * Dual-path Hedera deployer for LazyVoter contract with interactive confirmation:
- * 1) Default: Ethers (via JSON-RPC) with gas estimation + EIP-1559 fees
- * 2) Fallback: Hedera SDK (HTS) ContractCreateFlow/Transaction
- *
- * Mirrors your original flow and preserves a readline-style confirmation so
- * users see WHAT will deploy, on WHICH network, and WITH WHAT gas/fees before paying.
+ * Hedera deployment script for LazyVoter contract using HTS (Hedera Token Service).
+ * This script deploys the LazyVoter contract with delegation capabilities.
  *
  * Usage examples:
- *   node deploy-LazyVoter.js --env TEST --rpc-url https://testnet.hashio.io/api --vote-message "Vote on Proposal" --nft-token 0x123... --quorum 10 --start-time 1695120000 --end-time 1695206400 --registry 0.0.12345 --eligible-serials 1,2,3
- *   node deploy-LazyVoter.js --env MAIN --rpc-url https://mainnet.hashio.io/api --gas-multiplier 1.2
- *   node deploy-LazyVoter.js --env TEST --use-hts --bytecode-file-id 0.0.12345
+ *   node deploy-LazyVoter.js --env TEST --vote-message "Vote on Proposal" --nft-token 0x123... --quorum 10 --start-time 1695120000 --end-time 1695206400 --registry 0.0.12345 --eligible-serials 1,2,3
+ *   node deploy-LazyVoter.js --env MAIN --bytecode-file-id 0.0.12345
  *
  * Help:
  *   node deploy-LazyVoter.js --help
@@ -29,14 +24,17 @@ const {
 	Client,
 	AccountId,
 	PrivateKey,
-	ContractCreateFlow,
+	ContractId,
+	TokenId,
 	ContractFunctionParameters,
 	ContractCreateTransaction,
 } = require('@hashgraph/sdk');
 
+// Import the reliable contractDeployFunction
+const { contractDeployFunction } = require('../../utils/solidityHelpers');
 
-// Ethers v6
-const { ethers } = require('ethers');
+// Import mirror helpers for NFT info
+const { getTokenDetails } = require('../../utils/hederaMirrorHelpers');
 
 // ------- CLI ---------
 const argv = yargs(hideBin(process.argv))
@@ -44,34 +42,12 @@ const argv = yargs(hideBin(process.argv))
 	.option('env', {
 		type: 'string',
 		choices: ['TEST', 'MAIN', 'PREVIEW', 'LOCAL'],
-		describe: 'Network environment (used for HTS path and logs)',
+		describe: 'Network environment',
 		default: (process.env.ENVIRONMENT ?? 'TEST').toUpperCase(),
-	})
-	.option('rpc-url', {
-		type: 'string',
-		describe: 'JSON-RPC endpoint (required for Ethers path)',
-	})
-	.option('use-hts', {
-		type: 'boolean',
-		describe: 'Use Hedera SDK (ContractCreateFlow/Transaction) instead of Ethers',
-		default: false,
 	})
 	.option('bytecode-file-id', {
 		type: 'string',
-		describe: 'Deploy via existing Bytecode FileID (HTS path or ignored by Ethers)',
-	})
-	.option('gas-multiplier', {
-		type: 'number',
-		describe: 'Multiply the estimated gas by this factor for safety',
-		default: 1.15,
-	})
-	.option('max-fee-gwei', {
-		type: 'number',
-		describe: 'Override maxFeePerGas (gwei) for Ethers deploy',
-	})
-	.option('max-priority-gwei', {
-		type: 'number',
-		describe: 'Override maxPriorityFeePerGas (gwei) for Ethers deploy',
+		describe: 'Deploy via existing Bytecode FileID',
 	})
 	.option('artifact-dir', {
 		type: 'string',
@@ -85,53 +61,38 @@ const argv = yargs(hideBin(process.argv))
 	})
 	.option('vote-message', {
 		type: 'string',
-		describe: 'Vote message (string)',
-		default: process.env.VOTE_MESSAGE || 'Default Vote Message',
+		describe: 'Vote message (string) - REQUIRED',
+		default: process.env.VOTE_MESSAGE,
 	})
 	.option('nft-token', {
 		type: 'string',
-		describe: 'NFT token address (e.g., 0x... or 0.0.x)',
+		describe: 'NFT token address (e.g., 0x... or 0.0.x) - REQUIRED',
 		default: process.env.NFT_TOKEN,
 	})
 	.option('quorum', {
 		type: 'number',
 		describe: 'Quorum required (uint256)',
-		default: Number(process.env.QUORUM || 1),
+		default: process.env.QUORUM ? Number(process.env.QUORUM) : undefined,
 	})
 	.option('start-time', {
 		type: 'number',
 		describe: 'Voting start time (unix timestamp)',
-		default: Number(process.env.START_TIME || Math.floor(Date.now() / 1000)),
+		default: process.env.START_TIME ? Number(process.env.START_TIME) : undefined,
 	})
 	.option('end-time', {
 		type: 'number',
 		describe: 'Voting end time (unix timestamp)',
-		// Default to +1 day from now
-		default: Number(process.env.END_TIME || (Math.floor(Date.now() / 1000) + 86400)),
+		default: process.env.END_TIME ? Number(process.env.END_TIME) : undefined,
 	})
 	.option('registry', {
 		type: 'string',
-		describe: 'LazyDelegateRegistry contract ID (e.g., 0.0.x)',
+		describe: 'LazyDelegateRegistry contract ID (e.g., 0.0.x) - REQUIRED',
 		default: process.env.REGISTRY,
 	})
 	.option('eligible-serials', {
 		type: 'string',
 		describe: 'Comma-separated list of eligible serials (uint256[])',
-		default: process.env.ELIGIBLE_SERIALS || '',
-	})
-	.check(args => {
-		if (!process.env.PRIVATE_KEY) throw new Error('Missing PRIVATE_KEY in .env');
-		if (!process.env.ACCOUNT_ID) throw new Error('Missing ACCOUNT_ID in .env');
-		if (!args.useHts && !args.rpcUrl) {
-			throw new Error('For Ethers deploy, --rpc-url is required');
-		}
-		if (!args.nftToken) {
-			throw new Error('--nft-token (or NFT_TOKEN env) is required');
-		}
-		if (!args.registry) {
-			throw new Error('--registry (or REGISTRY env) is required');
-		}
-		return true;
+		default: process.env.ELIGIBLE_SERIALS,
 	})
 	.help()
 	.argv;
@@ -144,7 +105,7 @@ try {
 }
 catch (err) {
 	try {
-		operatorKey = PrivateKey.fromStringECDSAsecp256k1(process.env.PRIVATE_KEY);
+		operatorKey = PrivateKey.fromStringECDSA(process.env.PRIVATE_KEY);
 		console.log('[config] Detected ECDSA private key');
 	}
 	catch (ecdsaErr) {
@@ -170,134 +131,137 @@ function printHeader(obj) {
 	console.log(JSON.stringify(obj, null, 2));
 }
 
-function humanGwei(bn) {
-	if (!bn) return 'n/a';
-	try {
-		return `${ethers.formatUnits(bn, 'gwei')} gwei`;
-	}
-	catch {
-		return bn.toString();
-	}
-}
-
-function humanNative(bn) {
-	if (!bn) return 'n/a';
-	try {
-		return `${ethers.formatUnits(bn, 18)} (1e18 units)`;
-	}
-	catch {
-		return bn.toString();
-	}
-}
-
 function askContinue(promptLabel = 'Proceed with deployment?') {
-	const answer = readlineSync.question(`${promptLabel} (y/N): `);
+	const answer = readlineSync.question(`${promptLabel} (y/N): `, { defaultInput: 'n' });
 	if (String(answer).toLowerCase() !== 'y') {
 		console.log('Aborted by user.');
 		process.exit(0);
 	}
 }
 
-// ---------- ETHERS DEPLOY PATH ----------
-async function deployWithEthers() {
-	const provider = new ethers.JsonRpcProvider(argv.rpcUrl);
-	const wallet = new ethers.Wallet('0x' + operatorKey.toBytes().toString('hex'), provider);
+function promptRequired(promptLabel) {
+	const answer = readlineSync.question(`${promptLabel}: `);
+	if (!answer || answer.trim() === '') {
+		console.log('This field is required. Aborted.');
+		process.exit(1);
+	}
+	return answer.trim();
+}
 
-	const chainId = (await provider.getNetwork()).chainId;
-	const feeData = await provider.getFeeData();
-
-	// Parse eligible serials
-	const eligibleSerials = argv.eligibleSerials ? argv.eligibleSerials.split(',').map(s => ethers.toBigInt(s.trim())) : [];
-
-	// Format times for display
-	const startTimeLocal = new Date(argv.startTime * 1000).toLocaleString();
-	const endTimeLocal = new Date(argv.endTime * 1000).toLocaleString();
-
-	printHeader({
-		mode: 'Ethers + JSON-RPC',
-		env: argv.env,
-		rpcUrl: argv.rpcUrl,
-		accountEvm: await wallet.getAddress(),
-		chainId: chainId.toString(),
-		feeData: {
-			maxFeePerGas: humanGwei(feeData.maxFeePerGas),
-			maxPriorityFeePerGas: humanGwei(feeData.maxPriorityFeePerGas),
-			gasPrice: humanGwei(feeData.gasPrice),
-		},
-		constructor: {
-			voteMessage: argv.voteMessage,
-			nftToken: argv.nftToken,
-			quorum: argv.quorum,
-			startTime: `${argv.startTime} (${startTimeLocal})`,
-			endTime: `${argv.endTime} (${endTimeLocal})`,
-			registry: argv.registry,
-			eligibleSerials: eligibleSerials.map(s => s.toString()),
-		},
-	});
-
-	// Main contract estimate
-	const art = loadArtifact(CONTRACT_NAME);
-	const Factory = new ethers.ContractFactory(art.abi, art.bytecode, wallet);
-	const ctorArgs = [
-		argv.voteMessage,
-		argv.nftToken,
-		ethers.toBigInt(argv.quorum),
-		ethers.toBigInt(argv.startTime),
-		ethers.toBigInt(argv.endTime),
-		argv.registry,
-		eligibleSerials,
-	];
-	const unsigned = await Factory.getDeployTransaction(...ctorArgs);
-	const gasEstimate = await provider.estimateGas(unsigned);
-
-	// Apply multiplier
-	const gasLimit = gasEstimate * BigInt(Math.ceil(argv.gasMultiplier * 100)) / 100n;
-
-	const maxFeePerGas = argv.maxFeeGwei
-		? ethers.parseUnits(argv.maxFeeGwei.toString(), 'gwei')
-		: (feeData.maxFeePerGas || feeData.gasPrice || null);
-	const maxPriorityFeePerGas = argv.maxPriorityGwei
-		? ethers.parseUnits(argv.maxPriorityGwei.toString(), 'gwei')
-		: (feeData.maxPriorityFeePerGas || null);
-
-	const costUpperBound = maxFeePerGas ? (maxFeePerGas * gasLimit) : null;
-
-	console.log('\n—— Ethers Preflight ——');
-	console.log('Gas estimate:', gasEstimate.toString());
-	console.log('Gas limit (x multiplier):', gasLimit.toString());
-	if (maxFeePerGas) console.log('maxFeePerGas:', humanGwei(maxFeePerGas));
-	if (maxPriorityFeePerGas) console.log('maxPriorityFeePerGas:', humanGwei(maxPriorityFeePerGas));
-	if (costUpperBound) {
-		console.log('Upper-bound tx cost (gasLimit * maxFeePerGas):', humanNative(costUpperBound));
+function promptWithDefault(promptLabel, defaultValue, valueDescription = '') {
+	console.log(`${promptLabel}`);
+	console.log(`Default: ${defaultValue}${valueDescription ? ` (${valueDescription})` : ''}`);
+	const useDefault = promptYesNo('Use default value?', true);
+	if (useDefault) {
+		// Extract just the numeric part if default contains both timestamp and local time
+		const timestampMatch = defaultValue.match(/^(\d+)/);
+		return timestampMatch ? timestampMatch[1] : defaultValue;
 	}
 	else {
-		console.log('Note: Could not compute an upper-bound cost (missing maxFeePerGas).');
+		const customValue = readlineSync.question('Enter custom value: ');
+		if (!customValue || customValue.trim() === '') {
+			console.log('No value provided, using default.');
+			// Extract just the numeric part if default contains both timestamp and local time
+			const timestampMatch = defaultValue.match(/^(\d+)/);
+			return timestampMatch ? timestampMatch[1] : defaultValue;
+		}
+		return customValue.trim();
+	}
+}
+
+function promptYesNo(promptLabel, defaultYes = false) {
+	const defaultText = defaultYes ? 'Y/n' : 'y/N';
+	const answer = readlineSync.question(`${promptLabel} (${defaultText}): `, { defaultInput: defaultYes ? 'y' : 'n' });
+	return String(answer).toLowerCase() === 'y';
+}
+
+async function getNFTInfo(env, nftTokenId) {
+	try {
+		console.log(`\n📊 Fetching NFT information for ${nftTokenId}...`);
+		const tokenDetails = await getTokenDetails(env, nftTokenId);
+
+		if (!tokenDetails) {
+			console.log('⚠️  Could not fetch NFT details from mirror node');
+			return null;
+		}
+
+		const info = {
+			name: tokenDetails.name,
+			symbol: tokenDetails.symbol,
+			totalSupply: tokenDetails.total_supply,
+			maxSupply: tokenDetails.max_supply,
+			type: tokenDetails.type,
+		};
+
+		console.log('✅ NFT Info:');
+		console.log(`   Name: ${info.name}`);
+		console.log(`   Symbol: ${info.symbol}`);
+		console.log(`   Total Supply: ${info.totalSupply}`);
+		console.log(`   Max Supply: ${info.maxSupply || 'Unlimited'}`);
+		console.log(`   Type: ${info.type}`);
+
+		return info;
+	}
+	catch (error) {
+		console.log(`⚠️  Error fetching NFT info: ${error.message}`);
+		return null;
+	}
+}
+
+function calculateQuorumInfo(quorum, nftInfo, eligibleSerials) {
+	const eligibleCount = eligibleSerials && eligibleSerials.length > 0 ? eligibleSerials.length : (nftInfo ? nftInfo.totalSupply : 0);
+
+	if (eligibleCount === 0) {
+		return {
+			absoluteVotes: quorum,
+			percentage: 'N/A (no eligible voters)',
+			minimumVotes: quorum,
+		};
 	}
 
-	askContinue('Proceed with Ethers deployment');
+	const percentage = ((quorum / eligibleCount) * 100).toFixed(2);
+	return {
+		absoluteVotes: quorum,
+		percentage: `${percentage}%`,
+		minimumVotes: quorum,
+		eligibleCount: eligibleCount,
+	};
+}
 
-	// Deploy
-	const overrides = { gasLimit };
-	if (maxFeePerGas) overrides.maxFeePerGas = maxFeePerGas;
-	if (maxPriorityFeePerGas) overrides.maxPriorityFeePerGas = maxPriorityFeePerGas;
+function parseSerialRanges(input) {
+	if (!input || input.trim() === '') {
+		return [];
+	}
 
-	const contract = await Factory.deploy(...ctorArgs, overrides);
-	await contract.waitForDeployment();
-	const tx = contract.deploymentTransaction();
-	const receipt = await tx.wait();
+	const serials = new Set();
 
-	const address = await contract.getAddress();
+	// Split by comma and process each part
+	const parts = input.split(',').map(part => part.trim());
 
-	console.log('contract:', receipt.contractAddress);
-	console.log('gasUsed:', receipt.gasUsed.toString());
-	console.log('effectiveGasPrice:', receipt.effectiveGasPrice?.toString());
+	for (const part of parts) {
+		if (part.includes('-')) {
+			// Handle range like "1-5"
+			const [start, end] = part.split('-').map(s => parseInt(s.trim()));
+			if (!isNaN(start) && !isNaN(end) && start <= end) {
+				for (let i = start; i <= end; i++) {
+					serials.add(i);
+				}
+			}
+		}
+		else {
+			// Handle single number
+			const num = parseInt(part);
+			if (!isNaN(num)) {
+				serials.add(num);
+			}
+		}
+	}
 
-	console.log(`[ethers] Contract deployed at ${address} (tx: ${contract.deploymentTransaction().hash})`);
-	return { address };
+	return Array.from(serials).sort((a, b) => a - b);
 }
 
 // ---------- HTS (SDK) DEPLOY PATH ----------
-async function deployWithHTS() {
+async function deployWithHTS(eligibleSerials) {
 	let client;
 	switch (argv.env) {
 	case 'TEST': client = Client.forTestnet(); break;
@@ -312,90 +276,206 @@ async function deployWithHTS() {
 	}
 	client.setOperator(operatorId, operatorKey);
 
-	// Parse eligible serials
-	const eligibleSerials = argv.eligibleSerials ? argv.eligibleSerials.split(',').map(s => Number(s.trim())) : [];
+	try {
+		// Format times for display
+		const startTimeLocal = new Date(argv.startTime * 1000).toLocaleString();
+		const endTimeLocal = new Date(argv.endTime * 1000).toLocaleString();
 
-	// Format times for display
-	const startTimeLocal = new Date(argv.startTime * 1000).toLocaleString();
-	const endTimeLocal = new Date(argv.endTime * 1000).toLocaleString();
+		printHeader({
+			mode: 'HTS SDK',
+			env: argv.env,
+			operatorId: operatorId.toString(),
+			constructor: {
+				voteMessage: argv.voteMessage,
+				nftToken: argv.nftToken,
+				quorum: `${argv.quorum} votes (${calculateQuorumInfo(argv.quorum, null, eligibleSerials).percentage} of eligible voters)`,
+				startTime: `${argv.startTime} seconds (${startTimeLocal})`,
+				endTime: `${argv.endTime} seconds (${endTimeLocal})`,
+				registry: argv.registry,
+				eligibleSerials: eligibleSerials,
+			},
+			note: 'HTS path uses a fixed gas limit; network fee schedules apply.',
+		});
 
-	printHeader({
-		mode: 'HTS SDK',
-		env: argv.env,
-		operatorId: operatorId.toString(),
-		constructor: {
-			voteMessage: argv.voteMessage,
-			nftToken: argv.nftToken,
-			quorum: argv.quorum,
-			startTime: `${argv.startTime} (${startTimeLocal})`,
-			endTime: `${argv.endTime} (${endTimeLocal})`,
-			registry: argv.registry,
-			eligibleSerials: eligibleSerials,
-		},
-		note: 'HTS path uses a fixed gas limit; network fee schedules apply. No pre-create gas estimator available here.',
-	});
+		const gasLimit = 4_600_000;
 
-	const gasLimit = 4_600_000;
+		const art = loadArtifact(CONTRACT_NAME);
 
-	const art = loadArtifact(CONTRACT_NAME);
+		const params = new ContractFunctionParameters()
+			.addString(argv.voteMessage)
+			.addAddress(TokenId.fromString(argv.nftToken).toSolidityAddress())
+			.addUint256(argv.quorum)
+			.addUint256(argv.startTime)
+			.addUint256(argv.endTime)
+			.addAddress(ContractId.fromString(argv.registry).toSolidityAddress())
+			.addUint256Array(eligibleSerials);
 
-	const params = new ContractFunctionParameters()
-		.addString(argv.voteMessage)
-		.addAddress(argv.nftToken)
-		.addUint256(argv.quorum)
-		.addUint256(argv.startTime)
-		.addUint256(argv.endTime)
-		.addAddress(argv.registry)
-		.addUint256Array(eligibleSerials);
+		let contractId, contractAddress;
 
-	let contractId, contractAddress;
+		if (argv.bytecodeFileId) {
+			console.log('[hts] Deploying from Bytecode FileID:', argv.bytecodeFileId);
+			const createTx = new ContractCreateTransaction()
+				.setBytecodeFileId(argv.bytecodeFileId)
+				.setGas(gasLimit)
+				.setAutoRenewAccountId(operatorId)
+				.setConstructorParameters(params);
+			const submit = await createTx.execute(client);
+			const rx = await submit.getReceipt(client);
+			contractId = rx.contractId;
+			contractAddress = contractId.toSolidityAddress();
+		}
+		else {
+			console.log('[hts] Using ContractCreateFlow for reliable deployment...');
+			// Use the proven reliable contractDeployFunction with constructor parameters
+			[contractId, contractAddress] = await contractDeployFunction(client, art.bytecode, gasLimit, params);
+		}
 
-	if (argv.bytecodeFileId) {
-		console.log('[hts] Deploying from Bytecode FileID:', argv.bytecodeFileId);
-		const createTx = new ContractCreateTransaction()
-			.setBytecodeFileId(argv.bytecodeFileId)
-			.setGas(gasLimit)
-			.setAutoRenewAccountId(operatorId)
-			.setConstructorParameters(params);
-		const submit = await createTx.execute(client);
-		const rx = await submit.getReceipt(client);
-		contractId = rx.contractId;
-		contractAddress = contractId.toEvmAddress();
+		console.log(`[hts] Contract created: ${contractId} / ${contractAddress}`);
+		return { contractId: contractId.toString(), address: contractAddress };
 	}
-	else {
-		console.log('[hts] Uploading bytecode and deploying via ContractCreateFlow…');
-		const createTx = new ContractCreateFlow()
-			.setBytecode(art.bytecode)
-			.setGas(gasLimit)
-			.setAutoRenewAccountId(operatorId)
-			.setConstructorParameters(params);
-		const submit = await createTx.execute(client);
-		const rx = await submit.getReceipt(client);
-		contractId = rx.contractId;
-		contractAddress = contractId.toEvmAddress();
+	finally {
+		// Ensure client is closed to prevent hanging
+		if (client) {
+			client.close();
+		}
 	}
-
-	console.log(`[hts] Contract created: ${contractId} / ${contractAddress}`);
-	return { contractId: contractId.toString(), address: contractAddress };
 }
 
 // --------------- MAIN ----------------
 (async () => {
 	try {
-		const header = {
-			operatorId: operatorId.toString(),
-			env: argv.env,
-			mode: argv.useHts ? 'HTS SDK' : 'Ethers + JSON-RPC',
-		};
-		printHeader(header);
+		console.log('🚀 LazyVoter Deployment Script');
+		console.log('================================');
 
-		if (argv.useHts) {
-			await deployWithHTS();
+		// Interactive prompts for required values
+		if (!argv.voteMessage) {
+			argv.voteMessage = promptRequired('Enter vote message');
+		}
+
+		if (!argv.nftToken) {
+			argv.nftToken = promptRequired('Enter NFT token address (e.g., 0.0.x or 0x...)');
+		}
+
+		// Fetch NFT information
+		let nftInfo = null;
+		try {
+			nftInfo = await getNFTInfo(argv.env, argv.nftToken);
+		}
+		catch (error) {
+			console.log(`⚠️  Could not fetch NFT info, continuing without it: ${error.message}`);
+		}
+
+		if (!argv.registry) {
+			argv.registry = promptRequired('Enter LazyDelegateRegistry contract ID (e.g., 0.0.x)');
+		}
+
+		// Optional values with defaults
+		if (argv.quorum === undefined) {
+			let quorumDescription = 'minimum votes needed to pass';
+			if (nftInfo) {
+				const sampleQuorum = Math.ceil(nftInfo.totalSupply * 0.5);
+				// 50% as example
+				quorumDescription = `minimum votes needed to pass (NFT total supply: ${nftInfo.totalSupply}, 50% would be ${sampleQuorum} votes)`;
+			}
+			const quorumInput = promptWithDefault('Enter quorum required', '1', quorumDescription);
+			argv.quorum = Number(quorumInput);
+		}
+
+		// +1 hour buffer
+		const now = Math.floor(Date.now() / 1000) + 3600;
+		if (argv.startTime === undefined) {
+			const startTimeLocal = new Date(now * 1000).toLocaleString();
+			const startInput = promptWithDefault(
+				'Enter voting start time',
+				`${now} (${startTimeLocal})`,
+				'unix timestamp in seconds (+1 hour from now)',
+			);
+			argv.startTime = Number(startInput);
+		}
+
+		if (argv.endTime === undefined) {
+			const defaultEnd = now + 86400;
+			// +1 day in seconds
+			const endTimeLocal = new Date(defaultEnd * 1000).toLocaleString();
+			const endInput = promptWithDefault(
+				'Enter voting end time',
+				`${defaultEnd} (${endTimeLocal})`,
+				'unix timestamp in seconds, +1 day from now',
+			);
+			argv.endTime = Number(endInput);
+		}
+
+		// Handle eligible serials
+		let eligibleSerials = [];
+		if (argv.eligibleSerials) {
+			eligibleSerials = parseSerialRanges(argv.eligibleSerials);
 		}
 		else {
-			await deployWithEthers();
+			const serialsInput = promptWithDefault(
+				'Enter eligible serials',
+				'',
+				'leave empty to specify after deployment, supports ranges like 1-5 or comma-separated like 1,3,5',
+			);
+			if (serialsInput) {
+				eligibleSerials = parseSerialRanges(serialsInput);
+			}
 		}
-		process.exit(0);
+
+		// Confirm empty eligible serials
+		if (eligibleSerials.length === 0) {
+			const confirmEmpty = promptYesNo('No eligible serials specified. Nobody can vote until updated. Is this correct?', false);
+			if (!confirmEmpty) {
+				console.log('Please specify eligible serials. Aborted.');
+				process.exit(0);
+			}
+		}
+
+		// Format times for display
+		const startTimeLocal = new Date(argv.startTime * 1000).toLocaleString();
+		const endTimeLocal = new Date(argv.endTime * 1000).toLocaleString();
+
+		// Show complete configuration
+		const quorumInfo = calculateQuorumInfo(argv.quorum, nftInfo, eligibleSerials);
+		const config = {
+			environment: argv.env,
+			operator: operatorId.toString(),
+			bytecodeFileId: argv.bytecodeFileId || 'Using inline bytecode',
+			nftInfo: nftInfo ? {
+				name: nftInfo.name,
+				symbol: nftInfo.symbol,
+				totalSupply: nftInfo.totalSupply,
+				maxSupply: nftInfo.maxSupply || 'Unlimited',
+			} : 'Not available',
+			constructor: {
+				voteMessage: argv.voteMessage,
+				nftToken: argv.nftToken,
+				quorum: `${argv.quorum} votes (${quorumInfo.percentage} of eligible voters)`,
+				startTime: `${argv.startTime} seconds (${startTimeLocal})`,
+				endTime: `${argv.endTime} seconds (${endTimeLocal})`,
+				registry: argv.registry,
+				eligibleSerials: eligibleSerials.length > 0
+					? `${eligibleSerials.length} serials: [${eligibleSerials.slice(0, 10).join(', ')}${eligibleSerials.length > 10 ? '...' : ''}]`
+					: 'None (open to all NFT holders)',
+			},
+			gasLimit: '4,600,000',
+			network: argv.env,
+		};
+
+		printHeader(config);
+
+		// Confirm deployment
+		askContinue('Deploy LazyVoter contract with the above configuration?');
+
+		// Deploy using HTS
+		const result = await deployWithHTS(eligibleSerials);
+
+		console.log('\n🎉 Deployment successful!');
+		console.log('========================');
+		console.log(`Contract ID: ${result.contractId}`);
+		console.log(`Contract Address: ${result.address}`);
+
+		// Force exit to prevent hanging on Windows
+		setTimeout(() => process.exit(0), 100);
 	}
 	catch (err) {
 		console.error('Deployment failed:', err.message);

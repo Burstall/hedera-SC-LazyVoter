@@ -167,11 +167,52 @@ Requires `.env` with `PRIVATE_KEY` and `ACCOUNT_ID` for Hedera network.
 - Modular design: easy to add new analytics, controls, or voting logic.
 
 ## Deployment & Usage
-- Deploy with constructor arguments.
-- Fund contract with HBAR if needed.
-- Owner manages eligible serials and controls before voting starts.
-- Users vote with eligible NFT serials during the voting window.
-- Owner can withdraw HBAR at any time.
+
+### Deployment Scripts
+Two deployment scripts are provided for reliable HTS-based deployment:
+
+1. **Deploy LazyDelegateRegistry** (required first):
+   ```bash
+   node scripts/deployment/deploy-LazyDelegateRegistry.js --env TEST
+   ```
+
+2. **Deploy LazyVoter** (requires registry address):
+   ```bash
+   node scripts/deployment/deploy-LazyVoter.js \
+     --env TEST \
+     --vote-message "Your proposal here" \
+     --nft-token 0x123... \
+     --registry 0.0.12345
+   ```
+
+### Environment Options
+- `--env TEST`: Deploy to Hedera Testnet
+- `--env MAIN`: Deploy to Hedera Mainnet
+- `--env PREVIEW`: Deploy to Hedera Previewnet
+- `--env LOCAL`: Deploy to local Hedera network
+
+### Required Environment Variables
+Create a `.env` file with:
+```
+PRIVATE_KEY=your_private_key_here
+ACCOUNT_ID=your_account_id_here
+```
+
+### Optional Parameters
+- `--bytecode-file-id`: Deploy using existing bytecode file ID instead of inline bytecode
+- `--start-time`: Voting start time (unix timestamp, defaults to now)
+- `--end-time`: Voting end time (unix timestamp, defaults to +1 day)
+- `--quorum`: Required quorum (defaults to 1)
+- `--eligible-serials`: Comma-separated list of eligible NFT serials
+
+See `scripts/deployment/README.md` for detailed usage instructions.
+
+### Manual Deployment
+- Deploy contracts using Hedera SDK with HTS (Hedera Token Service)
+- Fund contract with HBAR if needed
+- Owner manages eligible serials and controls before voting starts
+- Users vote with eligible NFT serials during the voting window
+- Owner can withdraw HBAR at any time
 
 ## License
 MIT

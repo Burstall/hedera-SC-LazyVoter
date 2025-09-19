@@ -68,7 +68,7 @@ const main = async () => {
 
 	const contractId = ContractId.fromString(args[0]);
 	const offset = args.length >= 2 ? parseInt(args[1]) : 0;
-	const limit = args.length >= 3 ? parseInt(args[2]) : 50;
+	const limit = args.length >= 3 ? parseInt(args[2]) : 150;
 
 	// Validate parameters
 	if (isNaN(offset) || offset < 0) {

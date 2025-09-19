@@ -26,41 +26,66 @@ require('dotenv').config();
 const fs = require('fs');
 const { ethers } = require('ethers');
 const readlineSync = require('readline-sync');
-const { getArgFlag } = require('../../utils/nodeHelpers');
-const { contractExecuteFunction } = require('../../utils/solidityHelpers');
+const { getArgFlag, sleep } = require('../../utils/nodeHelpers');
+const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
 
 // Get operator from .env file
 const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 const contractName = process.env.CONTRACT_NAME ?? 'LazyVoter';
 
-const contractId = ContractId.fromString(process.env.CONTRACT_ID);
+// ContractId will be set in main based on CLI or .env
 const env = process.env.ENVIRONMENT ?? 'TEST';
 
 let client;
 
 const main = async () => {
 	const args = process.argv.slice(2);
-	if (getArgFlag('-h') || args.length != 0) {
-		console.log('Usage: pauseVoting.js');
+	if (getArgFlag('-h')) {
+		console.log('Usage: pauseVoting.js [options]');
+		console.log('');
+		console.log('Options:');
+		console.log('  --contract-id <id>: Specify LazyVoter contract ID (overrides .env)');
 		console.log('');
 		console.log('Environment Variables Required:');
-		console.log('  CONTRACT_ID - LazyVoter contract ID');
+		console.log('  CONTRACT_ID - LazyVoter contract ID (if not specified via --contract-id)');
 		console.log('  PRIVATE_KEY - Your Hedera private key');
 		console.log('  ACCOUNT_ID - Your Hedera account ID');
 		console.log('');
-		console.log('Example:');
+		console.log('Examples:');
 		console.log('  node scripts/interactions/pauseVoting.js');
+		console.log('  node scripts/interactions/pauseVoting.js --contract-id 0.0.12345');
 		return;
 	}
 
-	if (operatorId === undefined || operatorId == null) {
-		console.log('Environment required, please specify ACCOUNT_ID in the .env file');
-		return;
+	// Parse --contract-id flag
+	let contractIdFromCLI = null;
+	const contractIdIndex = args.indexOf('--contract-id');
+	if (contractIdIndex > -1 && contractIdIndex + 1 < args.length) {
+		contractIdFromCLI = args[contractIdIndex + 1];
+		// Remove the flag and value from args
+		args.splice(contractIdIndex, 2);
 	}
-	if (contractId === undefined || contractId == null) {
-		console.log('Contract ID required, please specify CONTRACT_ID in the .env file');
-		return;
+
+	// Check for unexpected arguments
+	if (args.length > 0) {
+		console.log('❌ Error: Unexpected arguments. Use --help for usage information.');
+		process.exit(1);
+	}
+
+	// Set contractId: prioritize CLI, then .env
+	const contractIdStr = contractIdFromCLI || process.env.CONTRACT_ID;
+	if (!contractIdStr) {
+		console.log('❌ Contract ID required: please specify --contract-id <id> or CONTRACT_ID in the .env file');
+		process.exit(1);
+	}
+
+	// Override the global contractId
+	const contractId = ContractId.fromString(contractIdStr);
+
+	if (operatorId === undefined || operatorId == null) {
+		console.log('❌ Environment required: please specify ACCOUNT_ID in the .env file');
+		process.exit(1);
 	}
 
 	console.log('\n=== PAUSE VOTING ===');
@@ -106,21 +131,20 @@ const main = async () => {
 		// Check current pause status
 		console.log('\n🔍 Checking current pause status...');
 		const pausedCall = lazyVoterIface.encodeFunctionData('votingPaused', []);
-		const pausedResult = await contractExecuteFunction(
-			client,
+		const pausedResult = await readOnlyEVMFromMirrorNode(
+			env,
 			contractId,
 			pausedCall,
-			0,
-			lazyVoterJSON.abi,
-			'votingPaused',
+			operatorId,
+			false,
 		);
-
-		const isPaused = pausedResult[0];
+		const decodedPaused = lazyVoterIface.decodeFunctionResult('votingPaused', pausedResult);
+		const isPaused = decodedPaused[0];
 		console.log('   Current status:', isPaused ? 'PAUSED' : 'ACTIVE');
 
 		if (isPaused) {
 			console.log('⚠️  Voting is already paused');
-			const confirm = readlineSync.question('Do you still want to proceed? (y/N): ');
+			const confirm = readlineSync.question('\nDo you want to proceed anyway? (y/N): ');
 			if (confirm.toLowerCase() !== 'y') {
 				console.log('❌ Operation cancelled by user');
 				process.exit(0);
@@ -129,9 +153,9 @@ const main = async () => {
 
 		// Confirm action
 		console.log('\n⚠️  This action will PAUSE voting:');
-		console.log('   - No new votes can be cast');
-		console.log('   - Existing votes remain valid');
-		console.log('   - Only the contract owner can unpause');
+		console.log('   🚫 No new votes can be cast');
+		console.log('   ✅ Existing votes remain valid');
+		console.log('   🔑 Only the contract owner can unpause');
 
 		const confirm = readlineSync.question('\nDo you want to proceed? (y/N): ');
 		if (confirm.toLowerCase() !== 'y') {
@@ -142,32 +166,32 @@ const main = async () => {
 		// Execute the transaction
 		console.log('\n⚙️  Executing pauseVoting transaction...');
 
-		const encodedFunctionCall = lazyVoterIface.encodeFunctionData('pauseVoting', []);
-
 		const result = await contractExecuteFunction(
-			client,
 			contractId,
-			encodedFunctionCall,
+			lazyVoterIface,
+			client,
 			0,
-			lazyVoterJSON.abi,
 			'pauseVoting',
+			[],
 		);
 
 		console.log('✅ Successfully paused voting!');
-		console.log('   Transaction ID:', result.transactionId.toString());
+		console.log('   Transaction ID:', result[2].transactionId.toString());
+
+		// wait 5 seconds for state to update
+		await sleep(5000);
 
 		// Verify the pause was successful
 		console.log('\n🔍 Verifying pause status...');
-		const verifyResult = await contractExecuteFunction(
-			client,
+		const verifyResult = await readOnlyEVMFromMirrorNode(
+			env,
 			contractId,
 			pausedCall,
-			0,
-			lazyVoterJSON.abi,
-			'votingPaused',
+			operatorId,
+			false,
 		);
-
-		const newPausedStatus = verifyResult[0];
+		const decodedVerify = lazyVoterIface.decodeFunctionResult('votingPaused', verifyResult);
+		const newPausedStatus = decodedVerify[0];
 		if (newPausedStatus) {
 			console.log('   ✅ Voting is now PAUSED');
 		}
@@ -178,6 +202,19 @@ const main = async () => {
 	}
 	catch (error) {
 		console.error('\n❌ Error pausing voting:', error.message);
+
+		// Provide helpful guidance based on error type
+		if (error.message.includes('Ownable: caller is not the owner')) {
+			console.log('\n💡 This error means:');
+			console.log('   - Only the contract owner can pause voting');
+			console.log('   - You need to use the contract owner account');
+		}
+		else if (error.message.includes('Voting is already paused')) {
+			console.log('\n💡 This error means:');
+			console.log('   - Voting is already in a paused state');
+			console.log('   - No action needed, or use unpause if you want to resume');
+		}
+
 		process.exit(1);
 	}
 };

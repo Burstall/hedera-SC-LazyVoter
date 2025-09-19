@@ -17,12 +17,14 @@
 const {
 	AccountId,
 	ContractId,
+	TokenId,
 } = require('@hashgraph/sdk');
 require('dotenv').config();
 const fs = require('fs');
 const { ethers } = require('ethers');
 const { getArgFlag } = require('../../utils/nodeHelpers');
 const { readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
+const { getTokenDetails } = require('../../utils/hederaMirrorHelpers');
 
 // Get operator from .env file
 let operatorId;
@@ -100,6 +102,26 @@ const main = async () => {
 		);
 		const nftToken = lazyVoterIface.decodeFunctionResult('NFT_TOKEN', result);
 		console.log('\n🎨 NFT Token:', nftToken[0]);
+
+		// Fetch additional NFT token details from mirror node
+		try {
+			const tokenId = TokenId.fromSolidityAddress(nftToken[0]);
+			const tokenDetails = await getTokenDetails(env, tokenId);
+
+			if (tokenDetails) {
+				console.log('   📋 Token Name:', tokenDetails.name);
+				console.log('   🏷️  Token Symbol:', tokenDetails.symbol);
+				console.log('   🔢 Total Supply:', tokenDetails.total_supply);
+				console.log('   🏦 Treasury Account:', tokenDetails.treasury_account_id);
+				console.log('   📊 Type:', tokenDetails.type);
+			}
+			else {
+				console.log('   ⚠️  Could not fetch token details from mirror node');
+			}
+		}
+		catch (error) {
+			console.log('   ⚠️  Could not fetch token details:', error.message);
+		}
 
 		// quorum
 		encodedCall = lazyVoterIface.encodeFunctionData('quorum', []);

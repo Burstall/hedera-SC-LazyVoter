@@ -29,41 +29,60 @@ const fs = require('fs');
 const { ethers } = require('ethers');
 const readlineSync = require('readline-sync');
 const { getArgFlag } = require('../../utils/nodeHelpers');
-const { contractExecuteFunction } = require('../../utils/solidityHelpers');
+const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
 
 // Get operator from .env file
 const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 const contractName = process.env.CONTRACT_NAME ?? 'LazyVoter';
 
-const contractId = ContractId.fromString(process.env.CONTRACT_ID);
+// ContractId will be set in main based on CLI or .env
 const env = process.env.ENVIRONMENT ?? 'TEST';
 
 let client;
 
 const main = async () => {
 	const args = process.argv.slice(2);
-	if (getArgFlag('-h') || args.length != 1) {
-		console.log('Usage: updateVoteMessage.js "<message>"');
+	if (getArgFlag('-h') || args.length < 1) {
+		console.log('Usage: updateVoteMessage.js "<message>" [options]');
 		console.log('  <message>: New vote message text (use quotes for multi-word messages)');
 		console.log('');
+		console.log('Options:');
+		console.log('  --contract-id <id>: Specify LazyVoter contract ID (overrides .env)');
+		console.log('');
 		console.log('Environment Variables Required:');
-		console.log('  CONTRACT_ID - LazyVoter contract ID');
+		console.log('  CONTRACT_ID - LazyVoter contract ID (if not specified via --contract-id)');
 		console.log('  PRIVATE_KEY - Your Hedera private key');
 		console.log('  ACCOUNT_ID - Your Hedera account ID');
 		console.log('');
-		console.log('Example:');
+		console.log('Examples:');
 		console.log('  node scripts/interactions/updateVoteMessage.js "Should we implement the new feature?"');
+		console.log('  node scripts/interactions/updateVoteMessage.js --contract-id 0.0.12345 "New message"');
 		return;
 	}
 
-	if (operatorId === undefined || operatorId == null) {
-		console.log('Environment required, please specify ACCOUNT_ID in the .env file');
-		return;
+	// Parse --contract-id flag
+	let contractIdFromCLI = null;
+	const contractIdIndex = args.indexOf('--contract-id');
+	if (contractIdIndex > -1 && contractIdIndex + 1 < args.length) {
+		contractIdFromCLI = args[contractIdIndex + 1];
+		// Remove the flag and value from args
+		args.splice(contractIdIndex, 2);
 	}
-	if (contractId === undefined || contractId == null) {
-		console.log('Contract ID required, please specify CONTRACT_ID in the .env file');
-		return;
+
+	// Set contractId: prioritize CLI, then .env
+	const contractIdStr = contractIdFromCLI || process.env.CONTRACT_ID;
+	if (!contractIdStr) {
+		console.log('❌ Contract ID required: please specify --contract-id <id> or CONTRACT_ID in the .env file');
+		process.exit(1);
+	}
+
+	// Override the global contractId
+	const contractId = ContractId.fromString(contractIdStr);
+
+	if (operatorId === undefined || operatorId == null) {
+		console.log('❌ Environment required: please specify ACCOUNT_ID in the .env file');
+		process.exit(1);
 	}
 
 	const newMessage = args[0];
@@ -117,21 +136,20 @@ const main = async () => {
 		// Get current message for comparison
 		console.log('\n🔍 Getting current vote message...');
 		const currentCall = lazyVoterIface.encodeFunctionData('voteMessage', []);
-		const currentResult = await contractExecuteFunction(
-			client,
+		const currentResult = await readOnlyEVMFromMirrorNode(
+			env,
 			contractId,
 			currentCall,
-			0,
-			lazyVoterJSON.abi,
-			'voteMessage',
+			operatorId,
+			false,
 		);
-
-		const currentMessage = currentResult[0];
+		const decodedCurrent = lazyVoterIface.decodeFunctionResult('voteMessage', currentResult);
+		const currentMessage = decodedCurrent[0];
 		console.log('   Current message:', currentMessage);
 
 		if (currentMessage === newMessage) {
 			console.log('⚠️  The new message is the same as the current message');
-			const confirm = readlineSync.question('Do you still want to proceed? (y/N): ');
+			const confirm = readlineSync.question('\nDo you want to proceed anyway? (y/N): ');
 			if (confirm.toLowerCase() !== 'y') {
 				console.log('❌ Operation cancelled by user');
 				process.exit(0);
@@ -140,8 +158,8 @@ const main = async () => {
 
 		// Confirm action
 		console.log('\n⚠️  This action will update the vote message:');
-		console.log('   From:', currentMessage);
-		console.log('   To:  ', newMessage);
+		console.log('   📝 From:', `"${currentMessage}"`);
+		console.log('   📝 To:  ', `"${newMessage}"`);
 
 		const confirm = readlineSync.question('\nDo you want to proceed? (y/N): ');
 		if (confirm.toLowerCase() !== 'y') {
@@ -152,33 +170,30 @@ const main = async () => {
 		// Execute the transaction
 		console.log('\n⚙️  Executing updateVoteMessage transaction...');
 
-		const encodedFunctionCall = lazyVoterIface.encodeFunctionData('updateVoteMessage', [newMessage]);
-
 		const result = await contractExecuteFunction(
-			client,
 			contractId,
-			encodedFunctionCall,
+			lazyVoterIface,
+			client,
 			0,
-			lazyVoterJSON.abi,
 			'updateVoteMessage',
+			[newMessage],
 		);
 
 		console.log('✅ Successfully updated vote message!');
-		console.log('   Transaction ID:', result.transactionId.toString());
+		console.log('   Transaction ID:', result[2].transactionId.toString());
 		console.log('   New message:', newMessage);
 
 		// Verify the message was updated
 		console.log('\n🔍 Verifying message was updated...');
-		const verifyResult = await contractExecuteFunction(
-			client,
+		const verifyResult = await readOnlyEVMFromMirrorNode(
+			env,
 			contractId,
 			currentCall,
-			0,
-			lazyVoterJSON.abi,
-			'voteMessage',
+			operatorId,
+			false,
 		);
-
-		const updatedMessage = verifyResult[0];
+		const decodedVerify = lazyVoterIface.decodeFunctionResult('voteMessage', verifyResult);
+		const updatedMessage = decodedVerify[0];
 		if (updatedMessage === newMessage) {
 			console.log('   ✅ Message successfully updated');
 		}
@@ -189,6 +204,24 @@ const main = async () => {
 	}
 	catch (error) {
 		console.error('\n❌ Error updating vote message:', error.message);
+
+		// Provide helpful guidance based on error type
+		if (error.message.includes('Ownable: caller is not the owner')) {
+			console.log('\n💡 This error means:');
+			console.log('   - Only the contract owner can update the vote message');
+			console.log('   - You need to use the contract owner account');
+		}
+		else if (error.message.includes('Message too long')) {
+			console.log('\n💡 This error means:');
+			console.log('   - The vote message exceeds the maximum allowed length');
+			console.log('   - Try a shorter message');
+		}
+		else if (error.message.includes('Empty message')) {
+			console.log('\n💡 This error means:');
+			console.log('   - The vote message cannot be empty');
+			console.log('   - Provide a non-empty message');
+		}
+
 		process.exit(1);
 	}
 };
