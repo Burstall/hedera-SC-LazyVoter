@@ -7,11 +7,16 @@
  *
  * Usage:
  *   node scripts/interactions/getEligibleSerials.js 0.0.12345 [offset] [limit]
+ *   node scripts/interactions/getEligibleSerials.js --contract-id 0.0.12345 [offset] [limit]
  *
  * Parameters:
  *   contract-id: LazyVoter contract ID (required)
  *   offset: Starting index for pagination (optional, default: 0)
- *   limit: Maximum number of serials to return (optional, default: 50)
+ *   limit: Maximum number of serials to return (optional, default: 50, max: 100)
+ *
+ * Options:
+ *   --contract-id: Specify contract ID using flag
+ *   --help, -h: Show help message
  *
  * Environment Variables:
  *   ACCOUNT_ID - Your Hedera account ID (required for mirror node queries)
@@ -27,6 +32,32 @@ const fs = require('fs');
 const { ethers } = require('ethers');
 const { getArgFlag } = require('../../utils/nodeHelpers');
 const { readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
+
+// Show usage information
+function showUsage() {
+	console.log('');
+	console.log('=== GET ELIGIBLE NFT SERIALS ===');
+	console.log('');
+	console.log('Usage:');
+	console.log('  node scripts/interactions/getEligibleSerials.js <contract-id> [offset] [limit]');
+	console.log('  node scripts/interactions/getEligibleSerials.js --contract-id <contract-id> [offset] [limit]');
+	console.log('');
+	console.log('Parameters:');
+	console.log('  <contract-id>    LazyVoter contract ID (e.g., 0.0.12345)');
+	console.log('  [offset]         Starting index for pagination (default: 0)');
+	console.log('  [limit]          Maximum serials to return (default: 50, max: 100)');
+	console.log('');
+	console.log('Options:');
+	console.log('  --contract-id    Specify contract ID using flag');
+	console.log('  --help, -h       Show this help message');
+	console.log('');
+	console.log('Examples:');
+	console.log('  node scripts/interactions/getEligibleSerials.js 0.0.12345');
+	console.log('  node scripts/interactions/getEligibleSerials.js 0.0.12345 0 25');
+	console.log('  node scripts/interactions/getEligibleSerials.js 0.0.12345 50 50');
+	console.log('  node scripts/interactions/getEligibleSerials.js --contract-id 0.0.12345');
+	console.log('');
+}
 
 // Get operator from .env file
 let operatorId;
@@ -53,30 +84,53 @@ const main = async () => {
 	}
 
 	const args = process.argv.slice(2);
-	if (args.length < 1 || args.length > 3 || getArgFlag('h')) {
-		console.log('Usage: getEligibleSerials.js <contract-id> [offset] [limit]');
-		console.log('  <contract-id>: LazyVoter contract ID (e.g., 0.0.12345)');
-		console.log('  [offset]: Starting index for pagination (default: 0)');
-		console.log('  [limit]: Maximum serials to return (default: 50, max: 100)');
-		console.log('');
-		console.log('Examples:');
-		console.log('  node scripts/interactions/getEligibleSerials.js 0.0.12345');
-		console.log('  node scripts/interactions/getEligibleSerials.js 0.0.12345 0 25');
-		console.log('  node scripts/interactions/getEligibleSerials.js 0.0.12345 50 50');
+
+	// Show help if requested
+	if (getArgFlag(args, 'help') || getArgFlag(args, 'h')) {
+		showUsage();
 		return;
 	}
 
-	const contractId = ContractId.fromString(args[0]);
-	const offset = args.length >= 2 ? parseInt(args[1]) : 0;
-	const limit = args.length >= 3 ? parseInt(args[2]) : 150;
+	// Get contract ID from either flag or positional argument
+	let contractIdString;
+	const contractIdFlag = getArgFlag(args, 'contract-id');
+	const filteredArgs = args.filter(arg => !arg.startsWith('--'));
+
+	if (contractIdFlag) {
+		contractIdString = contractIdFlag;
+	}
+	else if (filteredArgs.length >= 1) {
+		contractIdString = filteredArgs[0];
+	}
+	else {
+		console.log('❌ Error: Contract ID is required\n');
+		showUsage();
+		process.exit(1);
+	}
+
+	// Parse and validate contract ID
+	let contractId;
+	try {
+		contractId = ContractId.fromString(contractIdString);
+	}
+	catch {
+		console.log(`❌ Error: Invalid contract ID format "${contractIdString}"`);
+		console.log('   Expected format: 0.0.12345\n');
+		showUsage();
+		process.exit(1);
+	}
+
+	// Parse offset and limit from remaining positional arguments
+	const offset = filteredArgs.length >= 2 ? parseInt(filteredArgs[1]) : 0;
+	const limit = filteredArgs.length >= 3 ? parseInt(filteredArgs[2]) : 200;
 
 	// Validate parameters
 	if (isNaN(offset) || offset < 0) {
 		console.log('❌ Error: offset must be a non-negative number');
 		process.exit(1);
 	}
-	if (isNaN(limit) || limit < 1 || limit > 100) {
-		console.log('❌ Error: limit must be between 1 and 100');
+	if (isNaN(limit) || limit < 1 || limit > 200) {
+		console.log('❌ Error: limit must be between 1 and 200');
 		process.exit(1);
 	}
 

@@ -413,13 +413,15 @@ const main = async () => {
 			// Small delay between batches to avoid rate limiting
 			if (i < batches.length - 1) {
 				console.log('   Waiting 1 second before next batch...');
-				await sleep(1000);
+				await sleep(100);
 			}
 		}
 
 		console.log('\n🎉 All batches completed successfully!');
 		console.log(`   Total transactions: ${totalTransactions}`);
 		console.log(`   Total serials added: ${totalProcessed}`);
+
+		await sleep(5000);
 
 		// Verify the serials were added
 		console.log('\n🔍 Verifying serials were added...');

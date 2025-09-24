@@ -361,7 +361,7 @@ async function deployWithHTS(eligibleSerials) {
 			// assume solidity address
 			// convert to TokenId to validate
 			try {
-				argv.nftToken = TokenId.fromEvmAddress(0, 0, argv.nftToken);
+				argv.nftToken = TokenId.fromEvmAddress(0, 0, argv.nftToken).toString();
 			}
 			catch {
 				console.log('Invalid NFT token address format. Must be 0.0.x or 0x... Aborted.');
@@ -371,7 +371,7 @@ async function deployWithHTS(eligibleSerials) {
 		else {
 			// assume 0.0.x format
 			try {
-				argv.nftToken = TokenId.fromString(argv.nftToken);
+				argv.nftToken = TokenId.fromString(argv.nftToken).toString();
 			}
 			catch {
 				console.log('Invalid NFT token address format. Must be 0.0.x or 0x... Aborted.');
@@ -478,7 +478,7 @@ async function deployWithHTS(eligibleSerials) {
 				registry: argv.registry,
 				eligibleSerials: eligibleSerials.length > 0
 					? `${eligibleSerials.length} serials: [${eligibleSerials.slice(0, 10).join(', ')}${eligibleSerials.length > 10 ? '...' : ''}]`
-					: 'None (open to all NFT holders)',
+					: 'None (closed to all NFT holders)',
 			},
 			gasLimit: '4,600,000',
 			network: argv.env,
