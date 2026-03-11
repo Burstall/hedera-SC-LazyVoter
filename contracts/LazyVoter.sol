@@ -20,6 +20,7 @@ contract LazyVoter is Ownable {
     error VoteWindowClosed();
     error MaxSerialsExceeded();
     error SerialNotEligible(uint256 serial);
+    error InvalidVoteType();
 
     // --- EVENTS ---
     event EligibleSerialsAdded(uint256[] serials);
@@ -33,6 +34,7 @@ contract LazyVoter is Ownable {
     // --- STATE VARIABLES ---
     using Address for address payable;
     using EnumerableSet for EnumerableSet.UintSet;
+    using EnumerableSet for EnumerableSet.AddressSet;
 
     string public voteMessage;
     address public immutable NFT_TOKEN;
@@ -63,6 +65,8 @@ contract LazyVoter is Ownable {
     uint256 public yesCount;
     uint256 public noCount;
     uint256 public abstainCount;
+    EnumerableSet.AddressSet private uniqueVotersSet;
+    mapping(address => uint256) private voterCounts;
 
     // --- CONSTRUCTOR ---
     constructor(
@@ -158,6 +162,7 @@ contract LazyVoter is Ownable {
             revert VoteWindowClosed();
         if (serials.length == 0 || serials.length > 40)
             revert MaxSerialsExceeded();
+        if (voteType == VoteType.None) revert InvalidVoteType();
         for (uint256 i = 0; i < serials.length; i++) {
             uint256 serial = serials[i];
             if (!eligibleSerialsSet.contains(serial))
@@ -177,11 +182,26 @@ contract LazyVoter is Ownable {
             }
 
             VoteInfo storage v = serialVotes[serial];
+
             // If already voted, update counts
             if (v.hasVoted) {
                 if (v.voteType == VoteType.Yes) yesCount--;
                 else if (v.voteType == VoteType.No) noCount--;
                 else if (v.voteType == VoteType.Abstain) abstainCount--;
+
+                // Handle voter change on re-vote
+                if (v.voter != msg.sender) {
+                    voterCounts[v.voter]--;
+                    if (voterCounts[v.voter] == 0) {
+                        uniqueVotersSet.remove(v.voter);
+                    }
+                    voterCounts[msg.sender]++;
+                    uniqueVotersSet.add(msg.sender);
+                }
+            } else {
+                // First vote for this serial
+                voterCounts[msg.sender]++;
+                uniqueVotersSet.add(msg.sender);
             }
 
             // Set new vote
@@ -195,7 +215,7 @@ contract LazyVoter is Ownable {
                 votedSerialsSet.add(serial);
             }
 
-            // Update counts
+            // Update vote type counts
             if (voteType == VoteType.Yes) yesCount++;
             else if (voteType == VoteType.No) noCount++;
             else if (voteType == VoteType.Abstain) abstainCount++;
@@ -216,42 +236,13 @@ contract LazyVoter is Ownable {
         view
         returns (address[] memory voters, uint256[] memory voteCounts)
     {
-        // Count unique voters and their vote counts
-        uint256 totalVoted = votedSerialsSet.length();
-        address[] memory tempVoters = new address[](totalVoted);
-        uint256[] memory tempCounts = new uint256[](totalVoted);
-
-        // First pass: collect all voters (may have duplicates)
-        for (uint256 i = 0; i < totalVoted; i++) {
-            uint256 serial = votedSerialsSet.at(i);
-            tempVoters[i] = serialVotes[serial].voter;
-        }
-
-        // Second pass: count unique voters
-        uint256 uniqueCount = 0;
-        for (uint256 i = 0; i < totalVoted; i++) {
-            address voter = tempVoters[i];
-            bool found = false;
-            for (uint256 j = 0; j < uniqueCount; j++) {
-                if (tempVoters[j] == voter) {
-                    tempCounts[j]++;
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                tempVoters[uniqueCount] = voter;
-                tempCounts[uniqueCount] = 1;
-                uniqueCount++;
-            }
-        }
-
-        // Create final arrays with correct size
-        voters = new address[](uniqueCount);
-        voteCounts = new uint256[](uniqueCount);
-        for (uint256 i = 0; i < uniqueCount; i++) {
-            voters[i] = tempVoters[i];
-            voteCounts[i] = tempCounts[i];
+        uint256 count = uniqueVotersSet.length();
+        voters = new address[](count);
+        voteCounts = new uint256[](count);
+        for (uint256 i = 0; i < count; i++) {
+            address voter = uniqueVotersSet.at(i);
+            voters[i] = voter;
+            voteCounts[i] = voterCounts[voter];
         }
     }
 
