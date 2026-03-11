@@ -1,11 +1,11 @@
-function getArgFlag(arg) {
-	const customIndex = process.argv.indexOf(arg);
-
-	if (customIndex > -1) {
-		return true;
+function getArgFlag(argOrArray, flagName) {
+	if (flagName !== undefined) {
+		// Two-argument form: getArgFlag(args, 'flag-name')
+		const searchArray = Array.isArray(argOrArray) ? argOrArray : process.argv;
+		return searchArray.includes(`--${flagName}`) || searchArray.includes(`-${flagName}`);
 	}
-
-	return false;
+	// Single-argument form: getArgFlag('--flag')
+	return process.argv.includes(argOrArray);
 }
 
 function getArg(arg) {
@@ -24,13 +24,4 @@ async function sleep(ms) {
 	return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function hex_to_ascii(hex) {
-	const r = [];
-	for (let i = 0; i < hex.length - 1; i += 2) {
-		const v = parseInt(hex.charAt(i) + hex.charAt(i + 1), 16);
-		if (v) r.push(String.fromCharCode(v));
-	}
-	return r.join('');
-}
-
-module.exports = { getArgFlag, getArg, sleep, hex_to_ascii };
+module.exports = { getArgFlag, getArg, sleep };
