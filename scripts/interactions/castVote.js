@@ -44,7 +44,13 @@ const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../ut
 const { getSerialsOwned } = require('../../utils/hederaMirrorHelpers');
 
 // Get operator from .env file
-const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
+let operatorKey;
+try {
+	operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
+}
+catch {
+	operatorKey = PrivateKey.fromStringECDSA(process.env.PRIVATE_KEY);
+}
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 const contractName = process.env.CONTRACT_NAME ?? 'LazyVoter';
 
@@ -382,7 +388,7 @@ const main = async () => {
 		const votingStatus = lazyVoterIface.decodeFunctionResult('votingStatus', statusResult)[0];
 		console.log('   Voting status:', votingStatus);
 
-		if (votingStatus.includes('not started') || votingStatus.includes('ended')) {
+		if (votingStatus === 'NotStarted' || votingStatus.includes('ended') || votingStatus.includes('Ended')) {
 			console.log('❌ Error: Voting is not currently active');
 			console.log('   Status:', votingStatus);
 			process.exit(1);

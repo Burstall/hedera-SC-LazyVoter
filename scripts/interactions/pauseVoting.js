@@ -30,7 +30,13 @@ const { getArgFlag } = require('../../utils/nodeHelpers');
 const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
 
 // Get operator from .env file
-const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
+let operatorKey;
+try {
+	operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
+}
+catch {
+	operatorKey = PrivateKey.fromStringECDSA(process.env.PRIVATE_KEY);
+}
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 const contractName = process.env.CONTRACT_NAME ?? 'LazyVoter';
 

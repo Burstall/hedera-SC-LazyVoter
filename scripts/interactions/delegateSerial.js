@@ -40,10 +40,15 @@ const { ethers } = require('ethers');
 const readlineSync = require('readline-sync');
 const { getArgFlag } = require('../../utils/nodeHelpers');
 const { contractExecuteFunction } = require('../../utils/solidityHelpers');
-const { getSerialsOwned, convertToEthereumAddress } = require('../../utils/hederaMirrorHelpers');
+const { getSerialsOwned } = require('../../utils/hederaMirrorHelpers');
 
 // Get operator from .env file
-const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
+let operatorKey;
+try {
+	operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
+} catch {
+	operatorKey = PrivateKey.fromStringECDSA(process.env.PRIVATE_KEY);
+}
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 const delegateRegistryContractName = 'LazyDelegateRegistry';
 
@@ -65,8 +70,8 @@ case 'PREVIEW':
 	console.log('Using Hedera Previewnet');
 	break;
 case 'LOCAL': {
-	const { LocalProvider } = require('@hashgraph/hedera-local');
-	client = LocalProvider.getClient();
+	const node = { '127.0.0.1:50211': new AccountId(3) };
+	client = Client.forNetwork(node).setMirrorNetwork('127.0.0.1:5600');
 	console.log('Using Hedera Local');
 	break;
 }
@@ -189,8 +194,7 @@ async function main() {
 		try {
 			if (delegateAddressInput.startsWith('0.0.')) {
 				// Convert Hedera account ID to Ethereum address
-				const accountId = AccountId.fromString(delegateAddressInput);
-				delegateAddress = convertToEthereumAddress(accountId);
+				delegateAddress = AccountId.fromString(delegateAddressInput).toSolidityAddress();
 			}
 			else if (delegateAddressInput.startsWith('0x')) {
 				// Already an Ethereum address
@@ -277,7 +281,7 @@ async function showOwnedNFTs(tokenAddress) {
 
 		console.log(`NFT Token Address: ${tokenAddress}`);
 
-		const ownedSerials = await getSerialsOwned(tokenAddress, operatorId.toString());
+		const ownedSerials = await getSerialsOwned(ENVIRONMENT, operatorId.toString(), tokenAddress);
 
 		if (ownedSerials.length === 0) {
 			console.log('You do not own any NFTs for this token');

@@ -32,7 +32,13 @@ const { getArgFlag } = require('../../utils/nodeHelpers');
 const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
 
 // Get operator from .env file
-const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
+let operatorKey;
+try {
+	operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
+}
+catch {
+	operatorKey = PrivateKey.fromStringECDSA(process.env.PRIVATE_KEY);
+}
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 const contractName = process.env.CONTRACT_NAME ?? 'LazyVoter';
 
@@ -184,7 +190,6 @@ const main = async () => {
 		console.log('   New message:', newMessage);
 
 		console.log('\n✅ Vote message update completed successfully!');
-		process.exit(0);
 
 		// Verify the message was updated
 		console.log('\n🔍 Verifying message was updated...');
@@ -204,6 +209,7 @@ const main = async () => {
 			console.log('   ❌ Message update verification failed');
 		}
 
+		process.exit(0);
 	}
 	catch (error) {
 		console.error('\n❌ Error updating vote message:', error.message);

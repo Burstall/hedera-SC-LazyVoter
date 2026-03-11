@@ -42,7 +42,12 @@ const { contractExecuteFunction } = require('../../utils/solidityHelpers');
 const { getSerialsOwned } = require('../../utils/hederaMirrorHelpers');
 
 // Get operator from .env file
-const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
+let operatorKey;
+try {
+	operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
+} catch {
+	operatorKey = PrivateKey.fromStringECDSA(process.env.PRIVATE_KEY);
+}
 const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
 const delegateRegistryContractName = 'LazyDelegateRegistry';
 
@@ -63,8 +68,8 @@ case 'PREVIEW':
 	console.log('Using Hedera Previewnet');
 	break;
 case 'LOCAL': {
-	const { LocalProvider } = require('@hashgraph/hedera-local');
-	client = LocalProvider.getClient();
+	const node = { '127.0.0.1:50211': new AccountId(3) };
+	client = Client.forNetwork(node).setMirrorNetwork('127.0.0.1:5600');
 	console.log('Using Hedera Local');
 	break;
 }

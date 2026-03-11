@@ -166,13 +166,13 @@ const main = async () => {
 		console.log('   📊 Total votes:', voteSerials.length);
 
 		console.log('\n✅ Query completed successfully!');
-		process.exit(0);
 
 		// Show unique serials voted on
 		const uniqueSerials = [...new Set(voteSerials.map(s => Number(s)))];
 		console.log('   🎫 Unique serials voted on:', uniqueSerials.length);
 
 		console.log('\n✅ Votes by address retrieved successfully!');
+		process.exit(0);
 
 	}
 	catch (error) {
