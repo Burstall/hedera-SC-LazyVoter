@@ -10,6 +10,7 @@ const {
 	ContractFunctionParameters,
 	Hbar,
 	HbarUnit,
+	TransferTransaction,
 } = require('@hashgraph/sdk');
 
 const {
@@ -349,9 +350,8 @@ describe('LazyVoter Contract Tests', () => {
 		// check how long until startTime
 		const now = Math.floor(Date.now() / 1000);
 		const waitTime = (startTime - now) * 1000;
-		if (waitTime > 0) {
-			await sleep(waitTime + 1000);
-		}
+		// Always sleep at least 5s to let Hedera consensus catch up
+		await sleep(Math.max(waitTime, 0) + 5000);
 
 		// Alice votes on her serials (3,4) with Yes
 		client.setOperator(aliceId, alicePK);
@@ -611,6 +611,320 @@ describe('LazyVoter Contract Tests', () => {
 		}
 	});
 
+	it('Should handle re-voting correctly', async () => {
+		// Alice changes her vote on serial 5 from No to Yes
+		client.setOperator(aliceId, alicePK);
+		let result = await contractExecuteFunction(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			500_000,
+			'vote',
+			[[5], 1], // Vote Yes on serial 5 (was No)
+		);
+		if (result[0]?.status?.toString() != 'SUCCESS') {
+			console.log('Error:', result);
+			fail();
+		}
+
+		// Verify counts updated correctly: was yes=3,no=1,abstain=1, now yes=4,no=0,abstain=1
+		const queryResult = await contractExecuteQuery(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			200_000,
+			'getResults',
+			[],
+		);
+		expect(queryResult[0]).to.equal(4n); // yes (was 3, +1)
+		expect(queryResult[1]).to.equal(0n); // no (was 1, -1)
+		expect(queryResult[2]).to.equal(1n); // abstain (unchanged)
+
+		// Verify quorum is now reached (quorum=4, yesCount=4)
+		const quorumResult = await contractExecuteQuery(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			200_000,
+			'hasQuorum',
+			[],
+		);
+		expect(quorumResult[0]).to.be.true;
+	});
+
+	it('Should reject VoteType.None', async () => {
+		client.setOperator(aliceId, alicePK);
+		const result = await contractExecuteFunction(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			200_000,
+			'vote',
+			[[3], 3], // VoteType.None = 3
+		);
+		if (result[0]?.status?.toString() == 'SUCCESS') {
+			expect.fail('Should have failed with InvalidVoteType');
+		} else {
+			expect(result[0].message || result[0]?.status?.name).to.include('InvalidVoteType');
+		}
+	});
+
+	it('Should enforce serial count limits', async () => {
+		client.setOperator(aliceId, alicePK);
+
+		// Empty array should fail
+		let result = await contractExecuteFunction(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			200_000,
+			'vote',
+			[[], 1],
+		);
+		if (result[0]?.status?.toString() == 'SUCCESS') {
+			expect.fail('Should have failed with MaxSerialsExceeded for empty array');
+		} else {
+			expect(result[0].message || result[0]?.status?.name).to.include('MaxSerialsExceeded');
+		}
+
+		// 41 serials should fail (create array of 41 items — they don't need to be eligible, the length check comes first)
+		const tooMany = Array.from({ length: 41 }, (_, i) => i + 1);
+		result = await contractExecuteFunction(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			500_000,
+			'vote',
+			[tooMany, 1],
+		);
+		if (result[0]?.status?.toString() == 'SUCCESS') {
+			expect.fail('Should have failed with MaxSerialsExceeded for 41 serials');
+		} else {
+			expect(result[0].message || result[0]?.status?.name).to.include('MaxSerialsExceeded');
+		}
+	});
+
+	it('Should prevent owner functions after voting starts', async () => {
+		client.setOperator(operatorId, operatorKey);
+
+		// addEligibleSerials should fail after start
+		let result = await contractExecuteFunction(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			200_000,
+			'addEligibleSerials',
+			[[8]],
+		);
+		if (result[0]?.status?.toString() == 'SUCCESS') {
+			expect.fail('Should have failed with VoteStarted');
+		} else {
+			expect(result[0].message || result[0]?.status?.name).to.include('VoteStarted');
+		}
+
+		// removeEligibleSerials should fail after start
+		result = await contractExecuteFunction(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			200_000,
+			'removeEligibleSerials',
+			[[1]],
+		);
+		if (result[0]?.status?.toString() == 'SUCCESS') {
+			expect.fail('Should have failed with VoteStarted');
+		} else {
+			expect(result[0].message || result[0]?.status?.name).to.include('VoteStarted');
+		}
+
+		// updateVoteMessage should fail after start
+		result = await contractExecuteFunction(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			200_000,
+			'updateVoteMessage',
+			['Should not update'],
+		);
+		if (result[0]?.status?.toString() == 'SUCCESS') {
+			expect.fail('Should have failed with VoteStarted');
+		} else {
+			expect(result[0].message || result[0]?.status?.name).to.include('VoteStarted');
+		}
+
+		// updateQuorum should fail after start
+		result = await contractExecuteFunction(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			200_000,
+			'updateQuorum',
+			[10],
+		);
+		if (result[0]?.status?.toString() == 'SUCCESS') {
+			expect.fail('Should have failed with VoteStarted');
+		} else {
+			expect(result[0].message || result[0]?.status?.name).to.include('VoteStarted');
+		}
+	});
+
+	it('Should prevent non-owner from calling admin functions', async () => {
+		// Alice (non-owner) tries to pause
+		client.setOperator(aliceId, alicePK);
+		let result = await contractExecuteFunction(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			200_000,
+			'pauseVoting',
+			[],
+		);
+		if (result[0]?.status?.toString() == 'SUCCESS') {
+			expect.fail('Non-owner should not be able to pause');
+		}
+
+		// Alice tries to unpause
+		result = await contractExecuteFunction(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			200_000,
+			'unpauseVoting',
+			[],
+		);
+		if (result[0]?.status?.toString() == 'SUCCESS') {
+			expect.fail('Non-owner should not be able to unpause');
+		}
+	});
+
+	it('Should test withdrawHbar and receive()', async () => {
+		// First, fund the contract by sending HBAR to it
+		client.setOperator(operatorId, operatorKey);
+		const lazyVoterAccountId = AccountId.fromString(lazyVoterId.toString());
+		const fundTx = await new TransferTransaction()
+			.addHbarTransfer(operatorId, new Hbar(-1))
+			.addHbarTransfer(lazyVoterAccountId, new Hbar(1))
+			.execute(client);
+		await fundTx.getReceipt(client);
+
+		// Withdraw to operator
+		let result = await contractExecuteFunction(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			300_000,
+			'withdrawHbar',
+			[AccountId.fromString(operatorId.toString()).toSolidityAddress(), 50_000_000], // 0.5 HBAR in tinybars
+		);
+		if (result[0]?.status?.toString() != 'SUCCESS') {
+			console.log('Error:', result);
+			fail();
+		}
+
+		// Try withdraw to zero address — should fail
+		result = await contractExecuteFunction(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			200_000,
+			'withdrawHbar',
+			['0x0000000000000000000000000000000000000000', 1],
+		);
+		if (result[0]?.status?.toString() == 'SUCCESS') {
+			expect.fail('Should have failed with ZeroAddress');
+		} else {
+			expect(result[0].message || result[0]?.status?.name).to.include('ZeroAddress');
+		}
+
+		// Try withdraw more than balance — should fail
+		result = await contractExecuteFunction(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			200_000,
+			'withdrawHbar',
+			[AccountId.fromString(operatorId.toString()).toSolidityAddress(), 999_999_999_999],
+		);
+		if (result[0]?.status?.toString() == 'SUCCESS') {
+			expect.fail('Should have failed with InsufficientBalance');
+		} else {
+			expect(result[0].message || result[0]?.status?.name).to.include('InsufficientBalance');
+		}
+	});
+
+	it('Should test additional view functions', async () => {
+		client.setOperator(operatorId, operatorKey);
+
+		// Test getVotesByAddress for Alice
+		let queryResult = await contractExecuteQuery(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			300_000,
+			'getVotesByAddress',
+			[aliceId.toSolidityAddress()],
+		);
+		// Alice voted on serials 3, 4, 5 (3 serials)
+		expect(queryResult[0].length).to.equal(3);
+
+		// Test getAllVotes with pagination
+		queryResult = await contractExecuteQuery(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			300_000,
+			'getAllVotes',
+			[0, 10],
+		);
+		// 5 total voted serials (1, 2, 3, 4, 5)
+		expect(queryResult[0].length).to.equal(5);
+
+		// Test getVoteInfo for serial 3 (Alice voted Yes)
+		queryResult = await contractExecuteQuery(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			200_000,
+			'getVoteInfo',
+			[3],
+		);
+		expect(queryResult[0]).to.equal(1n); // VoteType.Yes
+
+		// Test getVotedSerials
+		queryResult = await contractExecuteQuery(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			200_000,
+			'getVotedSerials',
+			[],
+		);
+		expect(queryResult[0].length).to.equal(5);
+
+		// Test timeRemaining (should be > 0 since endTime is startTime + 3600)
+		queryResult = await contractExecuteQuery(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			200_000,
+			'timeRemaining',
+			[],
+		);
+		expect(Number(queryResult[0])).to.be.greaterThan(0);
+
+		// Test quorumPercent
+		queryResult = await contractExecuteQuery(
+			lazyVoterId,
+			lazyVoterIface,
+			client,
+			200_000,
+			'quorumPercent',
+			[],
+		);
+		// quorum=4, eligible=7, so quorumPercent = (4 * 10000) / 7 = 5714
+		expect(Number(queryResult[0])).to.equal(5714);
+	});
+
 	it('Should test owner emergency controls', async () => {
 		// Pause voting
 		client.setOperator(operatorId, operatorKey);
@@ -659,34 +973,34 @@ describe('LazyVoter Contract Tests', () => {
 			fail();
 		}
 	});
-});
 
-after(async () => {
-	// Reclaim HBAR from test accounts
-	console.log('\n- Reclaiming HBAR from test accounts...');
+	after(async () => {
+		// Reclaim HBAR from test accounts
+		console.log('\n- Reclaiming HBAR from test accounts...');
 
-	// ensure mirror has caught up
-	await sleep(4000);
+		// ensure mirror has caught up
+		await sleep(4000);
 
-	env = process.env.ENVIRONMENT || 'TEST';
+		env = process.env.ENVIRONMENT || 'TEST';
 
-	// Reclaim from Alice
-	let balance = await checkMirrorHbarBalance(env, aliceId);
-	// Leave 0.01 HBAR
-	balance -= 1_000_000;
-	if (balance > 0) {
-		console.log(`Reclaiming ${balance / 10 ** 8} HBAR from Alice`);
-		const result = await sweepHbar(client, aliceId, alicePK, operatorId, new Hbar(balance, HbarUnit.Tinybar));
-		console.log('Alice HBAR reclaim:', result);
-	}
+		// Reclaim from Alice
+		let balance = await checkMirrorHbarBalance(env, aliceId);
+		// Leave 0.01 HBAR
+		balance -= 1_000_000;
+		if (balance > 0) {
+			console.log(`Reclaiming ${balance / 10 ** 8} HBAR from Alice`);
+			const result = await sweepHbar(client, aliceId, alicePK, operatorId, new Hbar(balance, HbarUnit.Tinybar));
+			console.log('Alice HBAR reclaim:', result);
+		}
 
-	// Reclaim from Bob
-	balance = await checkMirrorHbarBalance(env, bobId);
-	// Leave 0.01 HBAR
-	balance -= 1_000_000;
-	if (balance > 0) {
-		console.log(`Reclaiming ${balance / 10 ** 8} HBAR from Bob`);
-		const result = await sweepHbar(client, bobId, bobPK, operatorId, new Hbar(balance, HbarUnit.Tinybar));
-		console.log('Bob HBAR reclaim:', result);
-	}
+		// Reclaim from Bob
+		balance = await checkMirrorHbarBalance(env, bobId);
+		// Leave 0.01 HBAR
+		balance -= 1_000_000;
+		if (balance > 0) {
+			console.log(`Reclaiming ${balance / 10 ** 8} HBAR from Bob`);
+			const result = await sweepHbar(client, bobId, bobPK, operatorId, new Hbar(balance, HbarUnit.Tinybar));
+			console.log('Bob HBAR reclaim:', result);
+		}
+	});
 });
