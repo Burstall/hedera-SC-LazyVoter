@@ -1,40 +1,59 @@
 {
-  "name": "hedera-sc-minter",
+  "name": "@lazysuperheroes/lazy-voter",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "NFT-based on-chain voting for Hedera with delegation support",
+  "main": "lib/index.js",
+  "bin": {
+    "lazyvote": "./bin/lazyvote.js"
+  },
   "scripts": {
     "test": "npx hardhat test",
     "test-voter": "npx hardhat test test/LazyVoter.test.js",
-    "deploy-voter": "npx hardhat run scripts/deployment/deploy-Voter.js",
-    "logs": "node scripts/getContractLogs.js",
-    "solhint": "solhint -f table contracts/**/*.sol"
+    "deploy-voter": "node scripts/deployment/deploy-LazyVoter.js",
+    "deploy-registry": "node scripts/deployment/deploy-LazyDelegateRegistry.js",
+    "extract-abi": "node scripts/deployment/extractABI.js",
+    "logs": "node scripts/debug/getContractLogs.js",
+    "solhint": "solhint -f table contracts/**/*.sol",
+    "lint:sol": "solhint -f table contracts/**/*.sol"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": ["hedera", "voting", "nft", "governance", "delegation", "hts", "smart-contract"],
+  "author": "Lazy Superheroes",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "lib/",
+    "abi/",
+    "bin/",
+    "contracts/",
+    "contracts/interfaces/",
+    "utils/clientFactory.js",
+    "utils/solidityHelpers.js",
+    "utils/hederaMirrorHelpers.js",
+    "utils/nodeHelpers.js",
+    "utils/gasHelpers.js",
+    "README.md"
+  ],
   "dependencies": {
-    "@eslint/eslintrc": "^3.1.0",
     "@hashgraph/sdk": "^2.19.0",
-    "abi-decoder": "^2.4.0",
     "axios": "^1.2.0",
     "dotenv": "^16.0.3",
     "ethers": "^6.13.1",
-    "hardhat-contract-sizer": "^2.10.1",
-    "hardhat-docgen": "^1.3.0",
-    "path": "^0.12.7",
     "readline-sync": "^1.4.10",
     "yargs": "^18.0.0"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3.1.0",
     "@eslint/js": "^9.5.0",
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
-    "@nomiclabs/hardhat-web3": "^2.0.0",
     "@openzeppelin/contracts": "^4.9.6",
     "chai": "^4.4.1",
     "eslint": "^9.5.0",
     "globals": "^15.6.0",
     "hardhat": "^2.12.3",
+    "hardhat-contract-sizer": "^2.10.1",
+    "hardhat-docgen": "^1.3.0",
     "solhint": "^5.0.1"
   }
 }

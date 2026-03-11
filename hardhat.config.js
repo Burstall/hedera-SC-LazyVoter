@@ -1,7 +1,6 @@
 require('hardhat-contract-sizer');
 require('@nomicfoundation/hardhat-toolbox');
 require('hardhat-docgen');
-require('@nomicfoundation/hardhat-ignition');
 
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
